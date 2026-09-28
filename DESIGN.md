@@ -97,7 +97,17 @@ Existing device E                     Relay                    New device N
 
 The relay sees only an opaque blob and its size. It never sees the key, the file type, the name or who it's for, beyond the sender being authenticated at upload. Blobs expire after 30 days. Linked devices receive the keys with the history, so they can open older images while the blob still exists. Group images are encrypted once and the key is delivered through the sender-key message, so each member doesn't need a separate upload.
 
-## 7. Notifications (Web Push)
+## 7. Calls (WebRTC)
+
+- **Signaling rides the E2E channel.** `ring`, `join`, `sdp`, `media`, `leave`, `decline` and `busy` are ordinary pairwise-encrypted messages (content `t: 'call'`). SDP includes the DTLS certificate fingerprints, so they're authenticated end to end: neither the relay nor a TURN server can MITM the DTLS-SRTP handshake. Media keys never leave the two endpoints.
+- **Topology:** full mesh. Each joined device connects to every other joined device. 1:1 is just the two-device case. Recommended up to ~6 people. An SFU would be needed beyond that, and would need insertable-streams E2EE to keep the same guarantee.
+- **Ringing:** the caller sends `ring` to all devices of the other accounts and to its own devices. The relay pushes it as `n: 'call'`, so a closed app shows "Incoming call". Only accepted contacts (1:1) or current group members can ring you. A ring older than 45 s becomes a missed call.
+- **Joining:** the answering device broadcasts `join`. Devices already in the call create a peer connection and make the offer. The answerer's other devices stop ringing ("answered elsewhere").
+- **Negotiation:** each device pair runs the *perfect negotiation* pattern. The polite side is decided by comparing device keys, so glare and mid-call renegotiation (turning the camera on in a voice call, ICE restarts after `failed`) are safe. ICE is non-trickle: the SDP is sent once gathering completes, or after 2.5 s.
+- **NAT traversal:** STUN plus coturn with the TURN REST scheme. `username = <expiry>:<acct prefix>`, `credential = base64(HMAC-SHA1(TURN_SECRET, username))`, 12 h. coturn denies relaying to private, loopback and link-local ranges.
+- **History:** every device records its own view of the call as a chat entry (missed, declined, no answer, busy, or duration).
+
+## 8. Notifications (Web Push)
 
 The goal: notifications while the app is closed, without handing message content or names to Google/Apple/Mozilla.
 
@@ -110,7 +120,7 @@ The goal: notifications while the app is closed, without handing message content
 
 What push reveals beyond the relay: the push service sees that *something* arrived for your browser and when. It never sees who from (the payload is encrypted to the browser) or what.
 
-## 8. What the server stores
+## 9. What the server stores
 
 | Table | Contents |
 |---|---|
@@ -123,11 +133,11 @@ What push reveals beyond the relay: the push service sees that *something* arriv
 
 Server-visible metadata: who sends to whom and when, message sizes, number of devices. Not visible: names, contacts, group membership or names, content, which messages are group messages beyond a `g` kind flag (the recipients share one ciphertext).
 
-## 9. Client storage
+## 10. Client storage
 
 IndexedDB key-value (`me`, `spk`, `opk:*`, `sess:*`, `id:*`, `contact:*`, `group:*`, `mysk:*`, `rsk:*`, `chat:*`, `msg:*`, `file:*` decrypted images). Keys aren't yet encrypted at rest. See the roadmap.
 
-## 10. Code map
+## 11. Code map
 
 ```
 shared/crypto.js     primitives (noble: ed25519/x25519, HKDF, HMAC, XChaCha20-Poly1305), IDs, safety numbers
@@ -138,11 +148,11 @@ client/core.js       protocol client: sessions, fan-out, groups, linking, contac
 client/store.js      IndexedDB + in-memory stores
 server/server.js     HTTP static + encrypted blob store + WebSocket RPC relay
 server/db.js         SQLite schema (node:sqlite, no native deps)
-web/                 PWA (vanilla JS, bundled by esbuild); web/sw.js = offline shell + push handling
+web/                 PWA (vanilla JS, bundled by esbuild); web/calls.js = WebRTC call engine; web/sw.js = offline shell + push handling
 test/                crypto unit tests + multi-client end-to-end tests over real sockets
 ```
 
-## 11. Roadmap / known gaps
+## 12. Roadmap / known gaps
 
 1. **Sealed sender**: hide the sender from the server (sender certificate inside the ciphertext, delivery tokens against spam).
 2. **Notification content:** optionally decrypt the message inside the service worker to show the text. That needs care: the SW and an open tab must not advance the same ratchet concurrently.

@@ -328,6 +328,39 @@ try {
     carol.setVisible(true);
   });
 
+  await t('calls: TURN credentials (coturn REST scheme) and incoming-call push', async () => {
+    const { createHmac } = await import('node:crypto');
+    let r = await alice.rpc('iceServers');
+    assert.equal(r.iceServers.length, 1, 'STUN only without TURN config');
+    process.env.TURN_URLS = 'turn:turn.example.com:3478?transport=udp,turn:turn.example.com:3478?transport=tcp';
+    process.env.TURN_SECRET = 'shared-secret';
+    r = await alice.rpc('iceServers');
+    const turn = r.iceServers.find((x) => x.username);
+    assert.deepEqual(r.iceServers[0].urls, ['stun:turn.example.com:3478'], 'STUN derived from TURN host');
+    const [exp] = turn.username.split(':');
+    assert.ok(Number(exp) * 1000 > Date.now() + 11 * 3600e3, 'valid ~12h');
+    assert.equal(turn.credential, createHmac('sha1', 'shared-secret').update(turn.username).digest('base64'));
+    delete process.env.TURN_URLS; delete process.env.TURN_SECRET;
+
+    // a ring is pushed as a call, carries no content, and reaches the callee's call engine
+    carol.setVisible(false);
+    await new Promise((res) => setTimeout(res, 1600));
+    pushes.length = 0;
+    const got = new Promise((res) => carol.on('call', (s) => { if (s.c.op === 'ring') res(s); }));
+    const targets = await alice.callDevices([carol.me.account]);
+    assert.ok(targets.some((x) => x.a === carol.me.account));
+    await alice.sendCall(targets, { op: 'ring', id: 'call-test-1', video: true, accounts: [alice.me.account, carol.me.account], chat: { dm: true } }, { push: true });
+    const sig = await got;
+    assert.equal(sig.from.a, alice.me.account);
+    assert.equal(sig.c.video, true);
+    await waitFor(() => pushes.some((x) => x.payload.n === 'call'), 'call push');
+    const cp = pushes.find((x) => x.payload.n === 'call').payload;
+    assert.deepEqual(Object.keys(cp).sort(), ['a', 'd', 'k', 'n', 'v']);
+    carol.setVisible(true);
+    await alice.logCall(`dm:${carol.me.account}`, { video: true, dir: 'out', status: 'ended', duration: 83 });
+    assert.equal((await alice.chat(`dm:${carol.me.account}`)).last.text, '📹 Outgoing call');
+  });
+
   await t('mute syncs to own devices', async () => {
     await alice.setMuted(gchat.id, true);
     await waitFor(async () => (await alice2.chat(gchat.id))?.muted === true, 'alice2 muted');

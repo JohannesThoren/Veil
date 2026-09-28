@@ -80,6 +80,14 @@ self.addEventListener('push', (e) => {
       for (const n of await self.registration.getNotifications({ tag: 'veil-quiet' })) n.close();
       return;
     }
+    if (p.n === 'call') {
+      // Incoming call: stays until answered or dismissed. Tapping opens the app, which rings if the call is still live.
+      await self.registration.showNotification(info.title, {
+        body: 'Incoming call', tag: `call:${p.a}`, renotify: true, requireInteraction: true, vibrate: [300, 200, 300, 200, 300],
+        icon: '/icons/icon-192.png', badge: '/icons/badge-96.png', data: { chatId: info.chatId, count: 0 },
+      });
+      return;
+    }
     const tag = info.chatId || 'veil';
     const prev = await self.registration.getNotifications({ tag });
     const count = (prev[0]?.data?.count ?? 0) + 1;

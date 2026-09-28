@@ -10,6 +10,7 @@ End-to-end encrypted messenger with **no username, phone number or email**.
 - Send images up to 50 MB (button, paste or drag-and-drop). They're encrypted on your device before upload.
 - Light and dark themes: follows your system, or pick one in Settings or with the moon/sun button.
 - Installable as an app on phone and desktop (Install button in the sidebar, or *Add to Home Screen* on iPhone).
+- **Voice and video calls**, 1:1 and group (up to ~6), end-to-end encrypted. Your own TURN server (coturn) is included for calls across networks.
 - Notifications, even when the app is closed. They show who wrote, never the message text. Mute per chat.
 
 See [DESIGN.md](DESIGN.md) for the protocol, threat model and roadmap.
@@ -63,6 +64,21 @@ Open **`/admin`** (e.g. `https://veil.example.com/admin`) and sign in with the a
 - The identity list shows each random ID, which invite it came from, device count and last activity. **Delete** removes the identity and signs all its devices out.
 - Sign-in is rate-limited (10 attempts / 15 min per IP). Behind a reverse proxy, set `TRUST_PROXY=1` so the real client IP is used.
 
+## Calls (WebRTC + TURN)
+
+Calls work out of the box on the same network. To call between networks (mobile data ↔ home Wi-Fi), run the bundled TURN server:
+
+1. `cp .env.example .env` and fill in:
+   - `TURN_DOMAIN`: a hostname pointing at your public IP, e.g. `turn.lgjt.xyz` (DNS only, no Cloudflare proxy)
+   - `TURN_EXTERNAL_IP`: `PUBLIC_IP/LAN_IP` of the server, e.g. `203.0.113.7/192.168.1.10`
+   - `TURN_SECRET`: `openssl rand -hex 32`
+2. Forward/open on your router and firewall, to the server: **3478/udp, 3478/tcp, 49160–49200/udp**.
+3. `docker compose up -d --build`
+
+The relay gives each device short-lived TURN credentials (12 h, HMAC with `TURN_SECRET`), so there are no static passwords. coturn refuses to relay into private networks, so it can't be used to reach your LAN. It only ever carries encrypted media.
+
+Check that TURN works: open DevTools on two devices, run `localStorage.setItem('veil-relay','1')`, reload, then call. That forces every call through TURN. Undo with `localStorage.removeItem('veil-relay')`.
+
 ## Notifications and installing
 
 - **Install:** Chrome/Edge/Android show an **Install app** button in the sidebar. On iPhone/iPad: Safari → Share → *Add to Home Screen*.
@@ -77,11 +93,12 @@ Open **`/admin`** (e.g. `https://veil.example.com/admin`) and sign in with the a
 3. **+ → Add contact**: paste an ID or contact link, or scan a QR. Messages from people who haven't been added show up as **requests** (accept or block).
 4. **+ → New group**: pick contacts. Admins can rename, add and remove. Removing someone rotates everyone's group keys.
 5. **Settings → Link a new device**: on the new device choose *Link to an existing device*, then scan or type the code, then approve on the old device. History, contacts and groups come along.
-6. **Contact → Safety number**: compare in person or scan their QR to verify.
+6. **Calls:** the phone and camera buttons in a chat. Group calls ring every member. Anyone who missed the ring can **Join** from the group while the call is on.
+7. **Contact → Safety number**: compare in person or scan their QR to verify.
 
 ## Status
 
-MVP. Not independently audited, so don't rely on it for high-risk use yet. Main gaps: images only (no other file types), no at-rest encryption of local storage, sender is visible to the server (no sealed sender). All are in DESIGN.md §11.
+MVP. Not independently audited, so don't rely on it for high-risk use yet. Main gaps: images only (no other file types), no at-rest encryption of local storage, sender is visible to the server (no sealed sender). All are in DESIGN.md §12.
 
 ## License
 

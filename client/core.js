@@ -491,6 +491,16 @@ export class VeilClient {
         if (chat) { Object.assign(chat, patch); await this.store.put(`chat:${c.chatId}`, chat); this.emit('change', { type: 'chat', chatId: c.chatId }); }
         return;
       }
+      case 'call': {
+        // Call signaling (ring/join/sdp/leave/…) travels over the same E2E channel; the call engine handles it.
+        if (typeof c.id !== 'string' || c.id.length > 40 || typeof c.op !== 'string') return;
+        if (!mine && c.profile?.name != null) {
+          const name = String(c.profile.name).slice(0, 64);
+          if ((await this.store.get(`profile:${from.a}`)) !== name) { await this.store.put(`profile:${from.a}`, name); this.emit('change', { type: 'contact', account: from.a }); }
+        }
+        this.emit('call', { from, c, ts: env.ts });
+        return;
+      }
       case 'me': {
         if (!mine) return;
         this.me.profileName = c.profileName;
@@ -617,6 +627,55 @@ export class VeilClient {
     if (account === this.me.account) return this.me.profileName || 'You';
     const c = await this.store.get(`contact:${account}`);
     return c?.nickname || c?.profileName || (await this.store.get(`profile:${account}`)) || account.slice(0, 4) + '…' + account.slice(-4);
+  }
+
+  // ---------------- calls (signaling transport) ----------------
+  /** ICE servers (STUN + short-lived TURN credentials), cached until shortly before they expire. */
+  async iceServers() {
+    if (this._ice && this._ice.expires - Date.now() > 10 * 60 * 1000) return this._ice.servers;
+    const r = await this.rpc('iceServers');
+    this._ice = { servers: r.iceServers, expires: r.expires };
+    return r.iceServers;
+  }
+  /** Every device of these accounts plus my own other devices (identity-checked). */
+  callDevices(accounts) {
+    return this._serial(async () => {
+      const accts = uniq([...accounts, this.me.account]);
+      const lists = await this._deviceLists(accts);
+      const out = [];
+      for (const a of accts) for (const d of lists[a].devices) if (!(a === this.me.account && d === this.me.deviceId)) out.push({ a, d });
+      return out;
+    });
+  }
+  /** Send a call signal pairwise-encrypted to specific devices. push: wake devices with an "incoming call" notification. */
+  sendCall(targets, content, { push = false } = {}) {
+    return this._serial(async () => {
+      const msgs = [];
+      for (const { a, d } of targets) {
+        let id = await this.store.get(`id:${a}`);
+        if (!id) { await this._deviceLists([a]); id = await this.store.get(`id:${a}`); }
+        try { msgs.push({ a, d, b: await this._encryptFor(a, d, id.identity, { ...content, t: 'call' }) }); } catch (e) { console.warn('call signal to', a, d, e.message); }
+      }
+      if (msgs.length) await this.rpc('send', { k: 'dm', msgs, ...(push ? { push: 'call' } : {}) });
+    });
+  }
+  /** My display name, attached to call setup so people who haven't chatted yet still see who's calling. */
+  get _profileTag() { return this.me.profileName ? { name: this.me.profileName } : undefined; }
+  /** Add a call entry to a chat's history (each device records its own view of the call). */
+  async logCall(chatId, info) {
+    const chat = await this.store.get(`chat:${chatId}`);
+    if (!chat) return;
+    const ts = Date.now();
+    await this._systemMessage(chatId, { kind: 'call', ...info }, ts);
+    const icon = info.video ? '📹' : '📞';
+    const label = info.status === 'missed' ? 'Missed call' : info.status === 'declined' ? 'Declined call' : info.status === 'no-answer' ? 'No answer'
+      : info.status === 'busy' ? 'Busy' : info.dir === 'out' ? 'Outgoing call' : 'Incoming call';
+    const fresh = await this.store.get(`chat:${chatId}`);
+    fresh.last = { text: `${icon} ${label}`, ts, from: info.dir === 'out' ? this.me.account : info.from ?? null };
+    fresh.updated = ts;
+    if (info.status === 'missed') fresh.unread = (fresh.unread ?? 0) + 1;
+    await this.store.put(`chat:${chatId}`, fresh);
+    this.emit('change', { type: 'chat', chatId });
   }
 
   // ---------------- chats & messages ----------------
