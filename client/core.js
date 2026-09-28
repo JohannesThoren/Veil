@@ -53,6 +53,7 @@ export class VeilClient {
     this._backoff = 500;
     this.httpBase = url.replace(/^ws/, 'http').replace(/\/ws$/, '');
     this._downloads = new Map();
+    this._visible = true;
   }
 
   // ---------------- events ----------------
@@ -136,7 +137,26 @@ export class VeilClient {
     const sig = enc(Ed.sign(dec(this.me.sign.priv), stmt.auth(this._nonce)));
     const res = await this.rpc('auth', { account: this.me.account, device: this.me.deviceId, sig });
     this._setStatus('online');
+    this.rpc('presence', { visible: this._visible }).catch(() => {});
     this._maintainPrekeys(res.opks).catch((e) => this.emit('error', e));
+  }
+
+  // ---------------- presence & push ----------------
+  /** Tell the relay whether the app is in front. When it isn't, new messages also trigger a push. */
+  setVisible(visible) {
+    this._visible = !!visible;
+    if (this.status === 'online') this.rpc('presence', { visible: this._visible }).catch(() => {});
+  }
+  async pushKey() { return (await this.rpc('pushKey')).key; }
+  /** sub: PushSubscription.toJSON(), or null to stop pushes to this device. */
+  setPushSubscription(sub) { return this.rpc('pushSubscribe', { sub }); }
+  async setMuted(chatId, muted) {
+    const chat = await this.store.get(`chat:${chatId}`);
+    if (!chat) return;
+    chat.muted = !!muted;
+    await this.store.put(`chat:${chatId}`, chat);
+    this.emit('change', { type: 'chat', chatId });
+    this._fanout([], { t: 'chatState', chatId, patch: { muted: !!muted } }).catch(() => {});
   }
 
   _onPush(msg) {
@@ -373,7 +393,7 @@ export class VeilClient {
           msgs.push({ a, d, b: await this._encryptFor(a, d, lists[a].identity, content) });
         }
         if (!msgs.length) return Date.now();
-        const res = await this.rpc('send', { k: 'dm', msgs, accounts: accts });
+        const res = await this.rpc('send', { k: 'dm', msgs, accounts: accts, push: content.t === 'msg' });
         if (!res.stale) return res.ts;
         lists = await this._deviceLists(accts);
       }
@@ -447,7 +467,10 @@ export class VeilClient {
       case 'chatState': {
         if (!mine) return;
         const chat = await this.store.get(`chat:${c.chatId}`);
-        if (chat) { Object.assign(chat, c.patch); await this.store.put(`chat:${c.chatId}`, chat); this.emit('change', { type: 'chat', chatId: c.chatId }); }
+        const patch = {};
+        if (c.patch && 'unread' in c.patch) patch.unread = Number(c.patch.unread) || 0;
+        if (c.patch && 'muted' in c.patch) patch.muted = !!c.patch.muted;
+        if (chat) { Object.assign(chat, patch); await this.store.put(`chat:${c.chatId}`, chat); this.emit('change', { type: 'chat', chatId: c.chatId }); }
         return;
       }
       case 'me': {
@@ -803,7 +826,7 @@ export class VeilClient {
         await this.store.put(`mysk:${gid}`, mysk);
         if (!targets.length) return Date.now();
         const b = JSON.stringify(msg);
-        const res = await this.rpc('send', { k: 'g', msgs: targets.map((t) => ({ ...t, b })), accounts: accts });
+        const res = await this.rpc('send', { k: 'g', msgs: targets.map((t) => ({ ...t, b })), accounts: accts, push: content.t === 'msg' });
         if (!res.stale) return res.ts;
       }
       throw new Error('Group device list kept changing, try again');

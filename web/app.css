@@ -259,3 +259,12 @@ label.list-item { cursor: pointer; }
 .lightbox .bar .icon-btn:hover { background: rgba(255,255,255,.12); }
 .lightbox .stage { min-height: 0; display: grid; place-items: center; padding: 0 12px 12px; }
 .lightbox img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 6px; }
+
+/* ---------- install & notifications ---------- */
+.side-foot { display: grid; gap: 8px; }
+.nudge { display: flex; gap: 10px; align-items: center; margin: 4px 12px 8px; padding: 10px 8px 10px 12px; border-radius: 12px; background: var(--accent-soft); font-size: 14px; }
+.nudge > svg { color: var(--accent); }
+.nudge .grow { flex: 1; min-width: 0; }
+.nudge .btn { height: 32px; padding: 0 12px; }
+.nudge .icon-btn { width: 30px; height: 30px; }
+.muted-ico { width: 13px; height: 13px; vertical-align: -2px; opacity: .8; }

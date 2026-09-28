@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
+import webpush from 'web-push';
 import { openDb } from './db.js';
 import { Ed, dec, enc, rand, stmt, isAccountId, ALPHABET } from '../shared/crypto.js';
 
@@ -25,6 +26,28 @@ const LIMITS = {
   blobTtlMs: 30 * 24 * 3600 * 1000,
   uploadTtlMs: 10 * 60 * 1000,
 };
+// Only real browser push services, so a subscription can't make the relay call arbitrary URLs.
+const PUSH_HOSTS = /^(fcm\.googleapis\.com|android\.googleapis\.com|updates\.push\.services\.mozilla\.com|[a-z0-9-]+\.push\.services\.mozilla\.com|web\.push\.apple\.com|[a-z0-9.-]+\.push\.apple\.com|[a-z0-9.-]+\.notify\.windows\.com)$/;
+function validSubscription(sub) {
+  if (!sub || typeof sub.endpoint !== 'string' || sub.endpoint.length > 1024) return false;
+  let u;
+  try { u = new URL(sub.endpoint); } catch { return false; }
+  return u.protocol === 'https:' && PUSH_HOSTS.test(u.hostname) && !u.port
+    && typeof sub.keys?.p256dh === 'string' && sub.keys.p256dh.length < 200
+    && typeof sub.keys?.auth === 'string' && sub.keys.auth.length < 100;
+}
+
+function loadVapid(dataDir) {
+  if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
+    return { publicKey: process.env.VAPID_PUBLIC_KEY, privateKey: process.env.VAPID_PRIVATE_KEY };
+  }
+  const file = path.join(dataDir, 'vapid.json');
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* generate below */ }
+  const keys = webpush.generateVAPIDKeys();
+  fs.writeFileSync(file, JSON.stringify(keys), { mode: 0o600 });
+  return keys;
+}
+
 const isBlobId = (s) => typeof s === 'string' && /^[A-Za-z0-9_-]{22}$/.test(s);
 
 const isB64 = (s, max = 200) => typeof s === 'string' && s.length > 0 && s.length <= max && /^[A-Za-z0-9_-]+$/.test(s);
@@ -33,12 +56,39 @@ const isLinkId = (s) => typeof s === 'string' && s.length === 8 && [...s].every(
 class ClientError extends Error {}
 const must = (cond, msg) => { if (!cond) throw new ClientError(msg); };
 
-export function startServer({ port = 8080, dbPath = 'veil.db', staticDir = path.join(__dirname, '../web/dist'), log = console.log } = {}) {
+export function startServer({ port = 8080, dbPath = 'veil.db', staticDir = path.join(__dirname, '../web/dist'), log = console.log, pushSender } = {}) {
   const { q, tx } = openDb(dbPath);
   const blobDir = process.env.BLOB_DIR ?? path.join(path.dirname(path.resolve(dbPath)), 'blobs');
   fs.mkdirSync(blobDir, { recursive: true });
   const uploads = new Map();   // blobId -> { token, size, expires }
   const blobPath = (id) => path.join(blobDir, id);
+
+  // ---------- push ----------
+  const vapid = loadVapid(path.dirname(path.resolve(dbPath)));
+  const vapidSubject = process.env.VAPID_SUBJECT || 'mailto:admin@example.com';
+  const sendPush = pushSender ?? ((sub, payload, opts) => webpush.sendNotification(sub, payload, {
+    ...opts, vapidDetails: { subject: vapidSubject, publicKey: vapid.publicKey, privateKey: vapid.privateKey },
+  }));
+  const lastPush = new Map(); // "dest|sender" -> ts, light throttle (the push service also collapses by topic)
+  function isVisible(a, d) {
+    for (const c of online.get(key(a, d)) ?? []) if (c.visible !== false) return true;
+    return false;
+  }
+  function maybePush(a, d, payload) {
+    if (isVisible(a, d)) return; // the app is open and in front: it gets the message over the socket
+    const row = q.getPush.get(a, d);
+    if (!row?.push_sub) return;
+    const k = `${a}:${d}|${payload.a}`;
+    const now = Date.now();
+    if (now - (lastPush.get(k) ?? 0) < 1500) return;
+    lastPush.set(k, now);
+    const sub = JSON.parse(row.push_sub);
+    Promise.resolve(sendPush(sub, JSON.stringify(payload), { TTL: 24 * 3600, urgency: 'high', topic: payload.a }))
+      .catch((err) => {
+        if (err?.statusCode === 404 || err?.statusCode === 410) q.setPush.run(null, a, d); // subscription gone
+        else log('push failed', err?.statusCode ?? err?.message);
+      });
+  }
   const online = new Map();    // "account:device" -> Set<conn>
   const links = new Map();     // linkId -> { host, joiner, expires }
 
@@ -189,7 +239,7 @@ export function startServer({ port = 8080, dbPath = 'veil.db', staticDir = path.
     },
 
     // --- messaging ---
-    send(conn, { k, msgs, accounts }) {
+    send(conn, { k, msgs, accounts, push: wantPush }) {
       must(conn.account, 'not authenticated');
       must(k === 'dm' || k === 'g', 'bad kind');
       must(Array.isArray(msgs) && msgs.length > 0 && msgs.length <= 2000, 'bad msgs');
@@ -212,8 +262,14 @@ export function startServer({ port = 8080, dbPath = 'veil.db', staticDir = path.
       for (const m of msgs) must(q.getDevice.get(m.a, m.d), 'unknown recipient device');
       const ts = Date.now();
       const stored = sendTx({ account: conn.account, device: conn.device }, k, msgs, ts);
+      let groupKey = null;
+      if (wantPush && k === 'g') { try { groupKey = JSON.parse(msgs[0].b).k; } catch { /* ignore */ } }
       for (const m of stored) {
         push(m.a, m.d, { t: 'env', env: { seq: m.seq, from: { a: conn.account, d: conn.device }, k, b: m.b, ts } });
+        // Only real messages wake devices (not key distribution / sync), and never my own devices.
+        if (wantPush && m.a !== conn.account) {
+          maybePush(m.a, m.d, { v: 1, a: conn.account, d: conn.device, k, ...(typeof groupKey === 'string' && groupKey.length < 40 ? { g: groupKey } : {}) });
+        }
       }
       return { ts };
     },
@@ -221,6 +277,22 @@ export function startServer({ port = 8080, dbPath = 'veil.db', staticDir = path.
       must(conn.account, 'not authenticated');
       must(Array.isArray(seqs), 'bad seqs');
       for (const s of seqs) q.ack.run(s, conn.account, conn.device);
+      return {};
+    },
+
+    // --- presence & push ---
+    presence(conn, { visible }) {
+      conn.visible = visible !== false;
+      return {};
+    },
+    pushKey() {
+      return { key: vapid.publicKey };
+    },
+    pushSubscribe(conn, { sub }) {
+      must(conn.account, 'not authenticated');
+      if (sub == null) { q.setPush.run(null, conn.account, conn.device); return {}; }
+      must(validSubscription(sub), 'unsupported push endpoint');
+      q.setPush.run(JSON.stringify({ endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth } }), conn.account, conn.device);
       return {};
     },
 
@@ -348,6 +420,8 @@ export function startServer({ port = 8080, dbPath = 'veil.db', staticDir = path.
   // ---------- WebSocket RPC ----------
   const wss = new WebSocketServer({ server, path: '/ws', maxPayload: LIMITS.frame });
   wss.on('connection', (ws) => {
+    ws.isAlive = true;
+    ws.on('pong', () => { ws.isAlive = true; });
     const conn = {
       ws, account: null, device: null, nonce: enc(rand(32)),
       tokens: LIMITS.burst, last: Date.now(),
@@ -384,10 +458,20 @@ export function startServer({ port = 8080, dbPath = 'veil.db', staticDir = path.
     });
   });
 
+  // Detect dead sockets (e.g. a phone that suspended the app) so they stop counting as "visible".
+  const heartbeat = setInterval(() => {
+    for (const ws of wss.clients) {
+      if (!ws.isAlive) { ws.terminate(); continue; }
+      ws.isAlive = false;
+      ws.ping();
+    }
+  }, Number(process.env.HEARTBEAT_MS ?? 30000));
+
   const janitor = setInterval(() => {
     q.expire.run(Date.now() - LIMITS.mailboxTtlMs);
     for (const [id, l] of links) if (l.expires < Date.now()) links.delete(id);
     for (const [id, u] of uploads) if (u.expires < Date.now()) uploads.delete(id);
+    for (const [k, t] of lastPush) if (Date.now() - t > 60_000) lastPush.delete(k);
     fs.readdir(blobDir, (err, names) => {
       if (err) return;
       for (const name of names) {
@@ -407,7 +491,7 @@ export function startServer({ port = 8080, dbPath = 'veil.db', staticDir = path.
       resolve({
         port: server.address().port,
         blobDir,
-        close: () => { clearInterval(janitor); wss.close(); server.close(); for (const c of wss.clients) c.terminate(); },
+        close: () => { clearInterval(janitor); clearInterval(heartbeat); wss.close(); server.close(); for (const c of wss.clients) c.terminate(); },
       });
     });
   });

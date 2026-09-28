@@ -13,7 +13,7 @@ An account is a random ID. You add people by ID or QR. You add devices by code o
 | Multi-device | Every device has its own keys and sessions. Linking copies the identity key over an encrypted, approved channel. |
 | Detect MITM | TOFU key pinning, QR codes that carry the key, 60-digit safety numbers. |
 
-Non-goals for the MVP: metadata hiding (sealed sender), push notifications while the app is closed, non-image attachments, voice/video, account recovery without a device.
+Non-goals for the MVP: metadata hiding (sealed sender), non-image attachments, voice/video, account recovery without a device.
 
 ## 2. Identities and IDs
 
@@ -91,23 +91,36 @@ Existing device E                     Relay                    New device N
 
 The relay sees only an opaque blob and its size. It never sees the key, the file type, the name or who it's for, beyond the sender being authenticated at upload. Blobs expire after 30 days. Linked devices receive the keys with the history, so they can open older images while the blob still exists. Group images are encrypted once and the key is delivered through the sender-key message, so each member doesn't need a separate upload.
 
-## 7. What the server stores
+## 7. Notifications (Web Push)
+
+The goal: notifications while the app is closed, without handing message content or names to Google/Apple/Mozilla.
+
+- Each device can register a Web Push subscription with the relay (`pushSubscribe`). Endpoints are allow-listed to the real browser push services, so the relay can't be made to call arbitrary URLs.
+- The app reports whether it's in front (`presence`). A WebSocket heartbeat (30 s ping) drops sockets from suspended phones.
+- When the relay stores a message for a device that **isn't in front**, it sends a push. It only does this for real messages, which the sender marks (key distribution, read-state and contact sync never wake anyone), and never to the sender's own devices. The push payload is `{a: senderAccount, d: senderDevice, k: 'dm'|'g', g?: senderKeyId}`. That's metadata the relay already has, encrypted to the browser under Web Push (RFC 8291). `Topic` = sender, so a burst from one person collapses into one push.
+- The service worker looks up the sender's name, and for groups maps the sender-key id → group (`rsk:*`), in local IndexedDB. It shows **"Bob: new message"** or **"Book club — Bob: new message"**, counting repeats ("3 new messages"). Muted chats and blocked senders get a silent notification that's closed immediately, because Safari cancels subscriptions that receive pushes without showing anything.
+- When the app is running (a hidden tab), it decrypts the message itself and shows the text. Both paths use the chat id as the notification tag, so they replace each other instead of doubling up.
+- Mute state syncs across your own devices. App icon badge = unread count, where supported.
+
+What push reveals beyond the relay: the push service sees that *something* arrived for your browser and when. It never sees who from (the payload is encrypted to the browser) or what.
+
+## 8. What the server stores
 
 | Table | Contents |
 |---|---|
 | `accounts` | id, identity public key |
-| `devices` | device id, signing pub key, cert, device name **encrypted with a key derived from IK** (only your own devices can read it) |
+| `devices` | device id, signing pub key, cert, device name **encrypted with a key derived from IK** (only your own devices can read it), push subscription endpoint |
 | `spks` / `opks` | public prekeys |
 | `mailbox` | per-device queue of `{from account/device, kind, ciphertext, ts}`. Deleted on ack, expired after 30 days |
 | `blobs/` (files) | encrypted image blobs, random ids, deleted after 30 days |
 
 Server-visible metadata: who sends to whom and when, message sizes, number of devices. Not visible: names, contacts, group membership or names, content, which messages are group messages beyond a `g` kind flag (the recipients share one ciphertext).
 
-## 8. Client storage
+## 9. Client storage
 
 IndexedDB key-value (`me`, `spk`, `opk:*`, `sess:*`, `id:*`, `contact:*`, `group:*`, `mysk:*`, `rsk:*`, `chat:*`, `msg:*`, `file:*` decrypted images). Keys aren't yet encrypted at rest. See the roadmap.
 
-## 9. Code map
+## 10. Code map
 
 ```
 shared/crypto.js     primitives (noble: ed25519/x25519, HKDF, HMAC, XChaCha20-Poly1305), IDs, safety numbers
@@ -118,14 +131,14 @@ client/core.js       protocol client: sessions, fan-out, groups, linking, contac
 client/store.js      IndexedDB + in-memory stores
 server/server.js     HTTP static + encrypted blob store + WebSocket RPC relay
 server/db.js         SQLite schema (node:sqlite, no native deps)
-web/                 PWA (vanilla JS, bundled by esbuild)
+web/                 PWA (vanilla JS, bundled by esbuild); web/sw.js = offline shell + push handling
 test/                crypto unit tests + multi-client end-to-end tests over real sockets
 ```
 
-## 10. Roadmap / known gaps
+## 11. Roadmap / known gaps
 
 1. **Sealed sender**: hide the sender from the server (sender certificate inside the ciphertext, delivery tokens against spam).
-2. **Web Push** (VAPID) so notifications arrive when the app is closed. The payload would be a content-free wake-up.
+2. **Notification content:** optionally decrypt the message inside the service worker to show the text. That needs care: the SW and an open tab must not advance the same ratchet concurrently.
 3. **At-rest encryption** of IndexedDB with a passphrase / WebAuthn PRF key.
 4. **Other attachments** (files, video, voice notes) reuse the image pipeline. Very large files would need chunked streaming encryption instead of one in-memory buffer. Per-account storage quotas on the relay.
 5. **MLS** for large groups. Multi-admin conflict resolution (today concurrent admin edits are last-valid-version-wins).

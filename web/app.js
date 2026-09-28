@@ -42,6 +42,8 @@ const I = {
   moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>',
   monitor: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>',
   image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>',
+  bellOff: '<path d="M8.7 3A6 6 0 0 1 18 8a21 21 0 0 0 .6 5M17 17H3s3-2 3-9a4.7 4.7 0 0 1 .3-1.7M10.3 21a1.9 1.9 0 0 0 3.4 0M2 2l20 20"/>',
+  install: '<rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 7v7M9 11l3 3 3-3M10 18h4"/>',
   download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>',
 };
 const icon = (n, cls = 'i') => `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${I[n]}</svg>`;
@@ -113,6 +115,99 @@ const themeToggle = () => `<button class="icon-btn" data-theme-toggle aria-label
 function wireThemeToggles(root = document) {
   $$('[data-theme-toggle]', root).forEach((b) => (b.onclick = () => setTheme(isDark() ? 'light' : 'dark')));
   $$('[data-theme-set]', root).forEach((b) => (b.onclick = () => setTheme(b.dataset.themeSet)));
+}
+
+// ------------------------------------------------------------------ install as app
+let installPrompt = null;
+const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const canInstall = () => !isStandalone() && (!!installPrompt || isIOS());
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installPrompt = e; refreshInstallUI(); });
+window.addEventListener('appinstalled', () => { installPrompt = null; refreshInstallUI(); toast('Veil is installed'); });
+function refreshInstallUI() { $$('[data-install]').forEach((b) => b.classList.toggle('hidden', !canInstall())); }
+const installButton = (cls = 'btn') => `<button class="${cls} ${canInstall() ? '' : 'hidden'}" data-install>${icon('install')} Install app</button>`;
+function wireInstall(root = document) { $$('[data-install]', root).forEach((b) => (b.onclick = installApp)); }
+async function installApp() {
+  if (installPrompt) {
+    installPrompt.prompt();
+    const { outcome } = await installPrompt.userChoice;
+    if (outcome === 'accepted') installPrompt = null;
+    refreshInstallUI();
+    return;
+  }
+  openModal({
+    title: 'Install Veil',
+    body: `<ol style="margin:0;padding-left:20px;display:grid;gap:10px">
+      <li>Tap the <b>Share</b> button ${icon('share', 'i" style="width:16px;height:16px;vertical-align:-3px')} in Safari’s toolbar.</li>
+      <li>Choose <b>Add to Home Screen</b>.</li>
+      <li>Open Veil from your home screen, then turn on notifications in Settings.</li></ol>
+      <p class="muted small" style="margin:14px 0 0">On iPhone and iPad, notifications only work once Veil is added to the home screen.</p>`,
+  });
+}
+
+// ------------------------------------------------------------------ notifications
+// Two paths, both ending in the same notification (same tag = chat id, so they replace each other):
+//  • the app is running: it decrypts the message and shows the text;
+//  • the app is closed/suspended: the relay sends a Web Push with no content; the service worker
+//    looks up the sender's name locally and shows “Name: new message”.
+const notifSupported = () => 'Notification' in window && 'serviceWorker' in navigator;
+const pushSupported = () => notifSupported() && 'PushManager' in window && window.isSecureContext;
+const notifOff = () => { try { return localStorage.getItem('veil-notify') === 'off'; } catch { return false; } };
+const setNotifOff = (off) => { try { off ? localStorage.setItem('veil-notify', 'off') : localStorage.removeItem('veil-notify'); } catch { /* ignore */ } };
+function b64uToBytes(s) { const b = atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)); return Uint8Array.from(b, (c) => c.charCodeAt(0)); }
+
+async function subscribePush() {
+  if (!pushSupported() || Notification.permission !== 'granted' || notifOff()) return false;
+  const reg = await navigator.serviceWorker.ready;
+  const key = await client.pushKey();
+  let sub = await reg.pushManager.getSubscription();
+  const current = sub?.options?.applicationServerKey;
+  if (sub && current && btoa(String.fromCharCode(...new Uint8Array(current))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') !== key) {
+    await sub.unsubscribe(); sub = null; // relay's key changed
+  }
+  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(key) });
+  await client.setPushSubscription(sub.toJSON());
+  return true;
+}
+
+async function enableNotifications() {
+  if (!notifSupported()) { toast('This browser doesn’t support notifications'); return 'unsupported'; }
+  if (isIOS() && !isStandalone()) { installApp(); return 'install-first'; }
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') { toast('Notifications are blocked in your browser settings'); return perm; }
+  setNotifOff(false);
+  try {
+    const ok = await subscribePush();
+    toast(ok ? 'Notifications on — even when Veil is closed' : 'Notifications on while Veil is open');
+  } catch (e) {
+    toast('Notifications on while Veil is open (push unavailable: ' + (e.message || e) + ')');
+  }
+  scheduleRender();
+  return perm;
+}
+async function disableNotifications() {
+  setNotifOff(true);
+  try {
+    const reg = await navigator.serviceWorker?.ready;
+    await (await reg?.pushManager?.getSubscription())?.unsubscribe();
+  } catch { /* ignore */ }
+  await client.setPushSubscription(null).catch(() => {});
+  toast('Notifications off on this device');
+  scheduleRender();
+}
+function notifState() {
+  if (!notifSupported()) return 'unsupported';
+  if (notifOff()) return 'off';
+  if (Notification.permission === 'granted') return 'on';
+  if (Notification.permission === 'denied') return 'blocked';
+  return 'ask';
+}
+
+async function clearChatNotifications(chatId) {
+  try {
+    const reg = await navigator.serviceWorker?.getRegistration();
+    for (const n of (await reg?.getNotifications({ tag: chatId })) ?? []) n.close();
+  } catch { /* ignore */ }
 }
 
 // ------------------------------------------------------------------ images
@@ -335,6 +430,7 @@ function renderWelcome({ code = '' } = {}) {
       </div>
       <button class="btn block" id="w-link">Link this device</button>
     </div>
+    <div class="center" style="margin-top:4px">${installButton('btn')}</div>
     <ul class="points">
       <li>${icon('lock')}<span>End-to-end encrypted with the Signal protocol (X3DH + Double Ratchet). The server only relays ciphertext.</span></li>
       <li>${icon('eyeOff')}<span>No identifiers to leak: the server never learns your name, contacts or groups.</span></li>
@@ -343,6 +439,7 @@ function renderWelcome({ code = '' } = {}) {
   </div></div>`;
 
   wireThemeToggles();
+  wireInstall();
   $('#w-create').onclick = async (e) => {
     const btn = e.currentTarget;
     btn.disabled = true;
@@ -406,7 +503,9 @@ function startMain({ fresh = false, linked = false } = {}) {
       </div>
       <div class="search"><input class="input" id="search" placeholder="Search" autocomplete="off"></div>
       <div class="chat-list" id="chat-list"></div>
+      <div id="nudge"></div>
       <div class="side-foot">
+        ${installButton('btn block')}
         <button class="id-chip" id="b-myid">${icon('qr')}<div><div class="lbl">Your ID</div><div class="mono">${formatId(client.me.account)}</div></div></button>
       </div>
     </aside>
@@ -435,7 +534,25 @@ function startMain({ fresh = false, linked = false } = {}) {
     $('.drop-hint')?.remove();
     pickImages(e.dataTransfer.files);
   });
-  document.addEventListener('visibilitychange', () => { if (!document.hidden && ui.chatId) client.markRead(ui.chatId); });
+  const onVisibility = () => {
+    client.setVisible(!document.hidden);
+    if (!document.hidden) {
+      if (ui.chatId) { client.markRead(ui.chatId); clearChatNotifications(ui.chatId); }
+      if (client.status === 'offline') client.connect().catch(() => {});
+    }
+  };
+  document.addEventListener('visibilitychange', onVisibility);
+  window.addEventListener('pagehide', () => client.setVisible(false));
+  window.addEventListener('pageshow', onVisibility);
+  client.setVisible(!document.hidden);
+  navigator.serviceWorker?.addEventListener('message', (e) => {
+    if (e.data?.open) client.chat(e.data.open).then((c) => c && openChat(e.data.open));
+    if (e.data?.resubscribe) subscribePush().catch(() => {});
+  });
+  let pushSynced = false;
+  client.on('status', (st) => { if (st === 'online' && !pushSynced) { pushSynced = true; subscribePush().catch(() => {}); } });
+  if (client.status === 'online') { pushSynced = true; subscribePush().catch(() => {}); }
+  wireInstall();
   if (client.status !== 'online') client.connect().catch(() => {});
   renderSide();
   renderMain();
@@ -452,6 +569,20 @@ function scheduleRender() {
     await renderSide();
     if (ui.chatId) await renderConversation(false);
   });
+}
+
+function renderNudge(chatCount) {
+  const el = $('#nudge');
+  if (!el) return;
+  let dismissed = false;
+  try { dismissed = localStorage.getItem('veil-nudge') === 'no'; } catch { /* ignore */ }
+  const st = notifState();
+  if (dismissed || !chatCount || st !== 'ask') { el.innerHTML = ''; return; }
+  const iosNeedsInstall = isIOS() && !isStandalone();
+  el.innerHTML = `<div class="nudge">${icon('bell')}<div class="grow"><b>Get notified</b><div class="muted small">${iosNeedsInstall ? 'Add Veil to your home screen to get notifications.' : 'Know when a message arrives, even when Veil is closed.'}</div></div>
+    <button class="btn primary" id="nudge-yes">${iosNeedsInstall ? 'How' : 'Turn on'}</button><button class="icon-btn" id="nudge-no" aria-label="Dismiss">${icon('x')}</button></div>`;
+  $('#nudge-yes').onclick = () => enableNotifications();
+  $('#nudge-no').onclick = () => { try { localStorage.setItem('veil-nudge', 'no'); } catch { /* ignore */ } el.innerHTML = ''; };
 }
 
 async function chatTitle(chat) {
@@ -477,7 +608,7 @@ async function renderSide() {
         ${avatar(c.gid ?? c.peer, title, c.kind === 'group' ? 'group' : '')}
         <div class="meta">
           <div class="top"><span class="name">${esc(title)}</span><span class="time">${c.last ? fmtTime(c.last.ts) : ''}</span></div>
-          <div class="bottom"><span class="preview">${esc(preview)}</span>${c.request ? '<span class="pill warn">Request</span>' : c.unread ? `<span class="badge">${c.unread}</span>` : ''}</div>
+          <div class="bottom"><span class="preview">${c.muted ? `${icon('bellOff', 'i muted-ico')} ` : ''}${esc(preview)}</span>${c.request ? '<span class="pill warn">Request</span>' : c.unread ? `<span class="badge">${c.unread}</span>` : ''}</div>
         </div>
       </button>` });
   }
@@ -490,6 +621,8 @@ async function renderSide() {
   const first = $('#b-first');
   if (first) first.onclick = () => newChatModal();
   document.title = total ? `(${total}) Veil` : 'Veil';
+  try { total ? navigator.setAppBadge?.(total) : navigator.clearAppBadge?.(); } catch { /* unsupported */ }
+  renderNudge(chats.length);
 }
 
 function renderMain() {
@@ -512,6 +645,7 @@ function openChat(chatId) {
   saveDraft();
   if (!ui.chatId && matchMedia('(max-width: 760px)').matches) history.pushState({ chat: chatId }, '');
   ui.chatId = chatId;
+  clearChatNotifications(chatId);
   renderMain();
   renderSide();
 }
@@ -649,12 +783,18 @@ async function sysText(s, nameOf) {
 
 async function notify(m) {
   if (m.mine || (!document.hidden && ui.chatId === m.chatId)) return;
-  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  if (notifState() !== 'on') return;
   const chat = await client.chat(m.chatId);
+  if (!chat || chat.muted) return;
   const title = await chatTitle(chat);
   const text = m.att ? (m.text ? `📷 ${m.text}` : '📷 Photo') : m.text;
-  const body = chat.kind === 'group' ? `${await client.displayName(m.from)}: ${text}` : text;
-  const n = new Notification(title, { body: body.slice(0, 200), tag: m.chatId, icon: '/icon.svg' });
+  const body = (chat.kind === 'group' ? `${await client.displayName(m.from)}: ${text}` : text).slice(0, 200);
+  const opts = { body, tag: m.chatId, renotify: true, icon: '/icons/icon-192.png', badge: '/icons/badge-96.png', data: { chatId: m.chatId, count: 1 } };
+  try {
+    const reg = await navigator.serviceWorker?.getRegistration();
+    if (reg) { await reg.showNotification(title, opts); return; } // replaces a content-free push notification for the same chat
+  } catch { /* fall through */ }
+  const n = new Notification(title, opts);
   n.onclick = () => { window.focus(); openChat(m.chatId); n.close(); };
 }
 
@@ -663,6 +803,8 @@ function handleHash() {
   if (!h) return;
   history.replaceState(history.state, '', location.pathname);
   if (h.startsWith('#c=')) newChatModal({ contact: h });
+  else if (h.startsWith('#open=')) { const id = decodeURIComponent(h.slice(6)); client.chat(id).then((c) => c && openChat(id)); }
+  else if (h === '#new') newChatModal();
   else if (h.startsWith('#link=')) toast('This device is already set up. Open the link on the new device.');
 }
 
@@ -773,10 +915,18 @@ async function contactInfoModal(account) {
       </div>
       <div class="divider"></div>
       <div class="row" style="flex-wrap:wrap">
+        <button class="btn" id="ci-mute">${icon((await client.chat(`dm:${account}`))?.muted ? 'bell' : 'bellOff')} ${(await client.chat(`dm:${account}`))?.muted ? 'Unmute' : 'Mute'}</button>
         <button class="btn danger" id="ci-block">${c?.status === 'blocked' ? 'Unblock' : 'Block'}</button>
         <button class="btn danger" id="ci-del">${icon('trash')} Delete chat</button>
       </div>`,
   });
+  $('#ci-mute', m.el).onclick = async () => {
+    const chat = await client.chat(`dm:${account}`);
+    if (!chat) return;
+    await client.setMuted(chat.id, !chat.muted);
+    m.close();
+    contactInfoModal(account);
+  };
   $('#ci-save', m.el).onclick = async () => { await client.updateContact(account, { nickname: $('#ci-nick', m.el).value.trim() }); toast('Saved'); };
   $('#ci-verify', m.el).onclick = async () => { await client.setVerified(account, !idInfo?.verified); m.close(); contactInfoModal(account); };
   $('#ci-scan', m.el).onclick = async () => {
@@ -831,9 +981,11 @@ async function groupInfoModal(gid) {
         <div class="list">${addable.map(({ a, name }) => `<label class="list-item"><input type="checkbox" class="check" value="${a}">${avatar(a, name, 'sm')}<div class="grow"><div class="t">${esc(name)}</div></div></label>`).join('')}</div>
         <button class="btn block" id="gi-add" style="margin-top:10px">${icon('userPlus')} Add selected</button>` : ''}
       <div class="divider"></div>
+      <button class="btn block" id="gi-mute" style="margin-bottom:8px">${icon((await client.chat(`g:${gid}`))?.muted ? 'bell' : 'bellOff')} ${(await client.chat(`g:${gid}`))?.muted ? 'Unmute notifications' : 'Mute notifications'}</button>
       ${g.members.includes(me) ? `<button class="btn danger block" id="gi-leave">Leave group</button>` : `<button class="btn danger block" id="gi-del">${icon('trash')} Delete chat</button>`}`,
   });
   const run = async (fn) => { try { await fn(); m.close(); groupInfoModal(gid); } catch (e) { toast(errText(e)); } };
+  $('#gi-mute', m.el).onclick = async () => { const c = await client.chat(`g:${gid}`); if (c) run(() => client.setMuted(c.id, !c.muted)); };
   $('#gi-rename', m.el)?.addEventListener('click', () => run(() => client.renameGroup(gid, $('#gi-name', m.el).value.trim() || g.name)));
   $$('[data-remove]', m.el).forEach((b) => (b.onclick = async () => {
     const name = members.find((x) => x.a === b.dataset.remove).name;
@@ -866,8 +1018,9 @@ async function settingsModal() {
       <div class="divider"></div>
       <div class="kv" style="align-items:center"><span>Appearance</span><div class="seg" role="radiogroup" aria-label="Theme">
         <button data-theme-set="system">${icon('monitor')} System</button><button data-theme-set="light">${icon('sun')} Light</button><button data-theme-set="dark">${icon('moon')} Dark</button></div></div>
-      <div class="kv"><span>Notifications</span><button class="btn" id="st-notif" style="height:32px">${icon('bell')} ${'Notification' in window && Notification.permission === 'granted' ? 'Enabled' : 'Enable'}</button></div>
-      <p class="muted small" style="margin:4px 0 0">Shown while Veil is open in a tab or installed as an app.</p>
+      <div class="kv" style="align-items:center"><span>Notifications</span><div id="st-notif"></div></div>
+      <p class="muted small" style="margin:4px 0 0" id="st-notif-note"></p>
+      <div class="kv" style="align-items:center" id="st-install-row"><span>App</span>${canInstall() ? installButton('btn') : `<span class="muted small">${isStandalone() ? 'Installed' : 'Use your browser’s “Install” or “Add to Home Screen”'}</span>`}</div>
       <div class="divider"></div>
       <button class="btn danger" id="st-remove">${icon('trash')} Remove this device</button>`,
   });
@@ -876,11 +1029,22 @@ async function settingsModal() {
   $('#st-save', m.el).onclick = async () => { await client.setProfileName($('#st-name', m.el).value.trim()); toast('Saved'); };
   $('#st-id', m.el).onclick = () => myIdModal();
   $('#st-link', m.el).onclick = () => { m.close(); linkDeviceModal(); };
-  $('#st-notif', m.el).onclick = async (e) => {
-    if (!('Notification' in window)) return toast('Notifications aren’t supported here');
-    const p = await Notification.requestPermission();
-    e.currentTarget.innerHTML = `${icon('bell')} ${p === 'granted' ? 'Enabled' : 'Blocked'}`;
+  wireInstall(m.el);
+  const paintNotif = () => {
+    const st = notifState();
+    const box = $('#st-notif', m.el), note = $('#st-notif-note', m.el);
+    if (!box) return;
+    const on = st === 'on';
+    box.innerHTML = st === 'unsupported' || st === 'blocked'
+      ? `<span class="pill">${st === 'blocked' ? 'Blocked by browser' : 'Not supported'}</span>`
+      : `<div class="seg"><button data-n="on" class="${on ? 'on' : ''}">${icon('bell')} On</button><button data-n="off" class="${on ? '' : 'on'}">${icon('bellOff')} Off</button></div>`;
+    note.textContent = st === 'blocked' ? 'Allow notifications for this site in your browser settings, then come back.'
+      : isIOS() && !isStandalone() ? 'On iPhone/iPad, add Veil to your home screen first.'
+      : !pushSupported() ? 'Shown while Veil is open. Background notifications need HTTPS.'
+      : 'Arrive even when Veil is closed. They show who wrote, never what — the text stays encrypted until you open Veil.';
+    $$('[data-n]', box).forEach((b) => (b.onclick = async () => { b.dataset.n === 'on' ? await enableNotifications() : await disableNotifications(); paintNotif(); }));
   };
+  paintNotif();
   const devices = await client.listDevices().catch(() => null);
   const list = $('#st-devices', m.el);
   if (!list) return;

@@ -43,6 +43,10 @@ export function openDb(path) {
     CREATE INDEX IF NOT EXISTS mailbox_dest ON mailbox(account, device, seq);
   `);
 
+  // migrations
+  const cols = db.prepare('PRAGMA table_info(devices)').all().map((c) => c.name);
+  if (!cols.includes('push_sub')) db.exec('ALTER TABLE devices ADD COLUMN push_sub TEXT');
+
   const q = {
     getAccount: db.prepare('SELECT * FROM accounts WHERE id = ?'),
     insertAccount: db.prepare('INSERT INTO accounts (id, identity, created) VALUES (?, ?, ?)'),
@@ -50,6 +54,8 @@ export function openDb(path) {
     listDevices: db.prepare('SELECT id, sign_pub, cert, name_box, created, last_seen FROM devices WHERE account = ? ORDER BY created'),
     insertDevice: db.prepare('INSERT INTO devices (account, id, sign_pub, cert, name_box, created, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?)'),
     touchDevice: db.prepare('UPDATE devices SET last_seen = ? WHERE account = ? AND id = ?'),
+    setPush: db.prepare('UPDATE devices SET push_sub = ? WHERE account = ? AND id = ?'),
+    getPush: db.prepare('SELECT push_sub FROM devices WHERE account = ? AND id = ?'),
     deleteDevice: db.prepare('DELETE FROM devices WHERE account = ? AND id = ?'),
     setDeviceName: db.prepare('UPDATE devices SET name_box = ? WHERE account = ? AND id = ?'),
     upsertSpk: db.prepare('INSERT INTO spks (account, device, id, pub, sig) VALUES (?, ?, ?, ?, ?) ON CONFLICT(account, device) DO UPDATE SET id = excluded.id, pub = excluded.pub, sig = excluded.sig'),

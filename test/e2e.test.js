@@ -10,7 +10,15 @@ import { VeilClient } from '../client/core.js';
 import { MemoryStore } from '../client/store.js';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'veil-'));
-const srv = await startServer({ port: 0, dbPath: path.join(dir, 'test.db'), log: () => {} });
+const pushes = [];
+let pushFails = null;
+const srv = await startServer({
+  port: 0, dbPath: path.join(dir, 'test.db'), log: () => {},
+  pushSender: async (sub, payload, opts) => {
+    if (pushFails) throw Object.assign(new Error('gone'), { statusCode: pushFails });
+    pushes.push({ sub, payload: JSON.parse(payload), opts });
+  },
+});
 const url = `ws://localhost:${srv.port}/ws`;
 const clients = [];
 const mk = () => { const c = new VeilClient({ store: new MemoryStore(), url, WebSocket }); clients.push(c); return c; };
@@ -216,6 +224,66 @@ try {
     await bob.sendText(`dm:${carol.me.account}`, 'spam');
     await new Promise((r) => setTimeout(r, 300));
     assert.equal((await texts(carol, `dm:${bob.me.account}`)).length, 0);
+  });
+
+  await t('push: content-free, only real messages, only when the app is not in front', async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    await assert.rejects(bob.setPushSubscription({ endpoint: 'https://127.0.0.1/x', keys: { p256dh: 'a', auth: 'b' } }), /unsupported/);
+    await assert.rejects(bob.setPushSubscription({ endpoint: 'http://fcm.googleapis.com/x', keys: { p256dh: 'a', auth: 'b' } }), /unsupported/);
+    await bob.setPushSubscription({ endpoint: 'https://fcm.googleapis.com/fcm/send/bob', keys: { p256dh: 'BPkey', auth: 'AUth' } });
+    pushes.length = 0;
+    await alice.sendText(`dm:${bob.me.account}`, 'bob has the app open');
+    await waitFor(async () => (await texts(bob, `dm:${alice.me.account}`)).includes('bob has the app open'), 'delivered');
+    await sleep(100);
+    assert.equal(pushes.length, 0, 'no push while visible');
+
+    bob.setVisible(false);
+    await sleep(100);
+    await alice.sendText(`dm:${bob.me.account}`, 'SECRET-WORDS');
+    await waitFor(() => pushes.length === 1, 'push sent');
+    const p = pushes[0];
+    assert.equal(p.sub.endpoint, 'https://fcm.googleapis.com/fcm/send/bob');
+    assert.deepEqual(p.payload, { v: 1, a: alice.me.account, d: alice.me.deviceId, k: 'dm' });
+    assert.ok(!JSON.stringify(p).includes('SECRET'), 'no content in push');
+    assert.equal(p.opts.topic, alice.me.account, 'collapses per sender');
+
+    // control traffic (read-state sync, profile, contact sync) never wakes anyone
+    pushes.length = 0;
+    await bob.markRead(`dm:${alice.me.account}`);
+    await alice.setProfileName('Alice A.');
+    await sleep(200);
+    assert.equal(pushes.length, 0);
+
+    // group message: payload names the sender key so the device can resolve the group locally
+    const gid = gchat.id.slice(2);
+    await carol.setPushSubscription({ endpoint: 'https://web.push.apple.com/carol', keys: { p256dh: 'x', auth: 'y' } });
+    carol.setVisible(false);
+    await sleep(100);
+    pushes.length = 0;
+    await alice.sendText(gchat.id, 'group ping');
+    await waitFor(() => pushes.some((x) => x.sub.endpoint.endsWith('/carol')), 'group push');
+    const gp = pushes.find((x) => x.sub.endpoint.endsWith('/carol')).payload;
+    assert.equal(gp.k, 'g');
+    const rs = await carol.store.get(`rsk:${alice.me.account}:${alice.me.deviceId}:${gp.g}`);
+    assert.equal(rs.gid, gid, 'carol can map the push to the group without the server knowing it');
+
+    // dead subscriptions are dropped
+    await sleep(1600); // past the per-sender throttle
+    pushFails = 410;
+    await alice.sendText(`dm:${bob.me.account}`, 'x');
+    await sleep(1600);
+    pushFails = null;
+    pushes.length = 0;
+    await alice.sendText(`dm:${bob.me.account}`, 'y');
+    await sleep(200);
+    assert.equal(pushes.filter((x) => x.sub.endpoint.endsWith('/bob')).length, 0);
+    bob.setVisible(true);
+    carol.setVisible(true);
+  });
+
+  await t('mute syncs to own devices', async () => {
+    await alice.setMuted(gchat.id, true);
+    await waitFor(async () => (await alice2.chat(gchat.id))?.muted === true, 'alice2 muted');
   });
 
   await t('relay stores only ciphertext', async () => {

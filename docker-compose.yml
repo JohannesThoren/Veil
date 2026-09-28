@@ -6,8 +6,11 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
+    environment:
+      # Contact for the browser push services (required by Apple). Use your own address or site.
+      VAPID_SUBJECT: "mailto:you@example.com"
     volumes:
-      - veil-data:/data
+      - veil-data:/data   # database, encrypted image blobs, and the push (VAPID) key
 
 volumes:
   veil-data:

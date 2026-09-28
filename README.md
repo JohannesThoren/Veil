@@ -8,7 +8,8 @@ End-to-end encrypted messenger with **no username, phone number or email**.
 - Signal protocol (X3DH + Double Ratchet) for 1:1, Sender Keys for groups. The relay only ever sees ciphertext.
 - Send images up to 50 MB (button, paste or drag-and-drop). They're encrypted on your device before upload.
 - Light and dark themes: follows your system, or pick one in Settings or with the moon/sun button.
-- A PWA: works in any modern browser, installable on phone and desktop.
+- Installable as an app on phone and desktop (Install button in the sidebar, or *Add to Home Screen* on iPhone).
+- Notifications, even when the app is closed. They show who wrote, never the message text. Mute per chat.
 
 See [DESIGN.md](DESIGN.md) for the protocol, threat model and roadmap.
 
@@ -45,6 +46,13 @@ location / {
 
 In Nginx Proxy Manager / Nginx UI, enable "WebSockets support" on the proxy host and raise the upload limit (`client_max_body_size 51m`). Nginx's default of 1 MB would block larger images.
 
+## Notifications and installing
+
+- **Install:** Chrome/Edge/Android show an **Install app** button in the sidebar. On iPhone/iPad: Safari → Share → *Add to Home Screen*.
+- **Notifications:** turn them on from the prompt in the sidebar or in **Settings → Notifications**. On iPhone/iPad they only work in the installed app (iOS 16.4+).
+- The relay creates its push (VAPID) key on first start and stores it next to the database (`vapid.json`). Keep it: if it changes, every device silently re-subscribes on its next start. Set `VAPID_SUBJECT` to your email or site; Apple rejects pushes without a real contact. You can also supply `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY` yourself.
+- Background notifications need HTTPS, same as the camera.
+
 ## Using it
 
 1. **Create identity** and optionally set a name. The name is only sent, encrypted, to people you message.
@@ -56,4 +64,4 @@ In Nginx Proxy Manager / Nginx UI, enable "WebSockets support" on the proxy host
 
 ## Status
 
-MVP. Not independently audited, so don't rely on it for high-risk use yet. Main gaps: no push notifications while closed, images only (no other file types), no at-rest encryption of local storage, sender is visible to the server (no sealed sender). All are in DESIGN.md §10.
+MVP. Not independently audited, so don't rely on it for high-risk use yet. Main gaps: images only (no other file types), no at-rest encryption of local storage, sender is visible to the server (no sealed sender). All are in DESIGN.md §11.

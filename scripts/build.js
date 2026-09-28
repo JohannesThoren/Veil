@@ -24,4 +24,5 @@ await build({
 for (const f of ['index.html', 'app.css', 'theme.js', 'sw.js', 'manifest.webmanifest', 'icon.svg', 'icon-maskable.svg']) {
   fs.copyFileSync(path.join(root, 'web', f), path.join(out, f));
 }
+fs.cpSync(path.join(root, 'web/icons'), path.join(out, 'icons'), { recursive: true });
 console.log('built web/dist');
