@@ -20,7 +20,12 @@ const LIMITS = {
   mailboxTtlMs: 30 * 24 * 3600 * 1000,
   ratePerSec: 30,            // requests per connection, token bucket
   burst: 120,
+  // Attachments: 50 MiB plaintext + 24-byte nonce + 16-byte tag
+  blobBytes: 50 * 1024 * 1024 + 40,
+  blobTtlMs: 30 * 24 * 3600 * 1000,
+  uploadTtlMs: 10 * 60 * 1000,
 };
+const isBlobId = (s) => typeof s === 'string' && /^[A-Za-z0-9_-]{22}$/.test(s);
 
 const isB64 = (s, max = 200) => typeof s === 'string' && s.length > 0 && s.length <= max && /^[A-Za-z0-9_-]+$/.test(s);
 const isDeviceId = (s) => typeof s === 'string' && s.length === 8 && [...s].every((c) => ALPHABET.includes(c));
@@ -30,6 +35,10 @@ const must = (cond, msg) => { if (!cond) throw new ClientError(msg); };
 
 export function startServer({ port = 8080, dbPath = 'veil.db', staticDir = path.join(__dirname, '../web/dist'), log = console.log } = {}) {
   const { q, tx } = openDb(dbPath);
+  const blobDir = process.env.BLOB_DIR ?? path.join(path.dirname(path.resolve(dbPath)), 'blobs');
+  fs.mkdirSync(blobDir, { recursive: true });
+  const uploads = new Map();   // blobId -> { token, size, expires }
+  const blobPath = (id) => path.join(blobDir, id);
   const online = new Map();    // "account:device" -> Set<conn>
   const links = new Map();     // linkId -> { host, joiner, expires }
 
@@ -215,6 +224,17 @@ export function startServer({ port = 8080, dbPath = 'veil.db', staticDir = path.
       return {};
     },
 
+    // --- attachments: encrypted client-side; the server stores opaque bytes under a random id ---
+    blobToken(conn, { blob, size }) {
+      must(conn.account, 'not authenticated');
+      must(isBlobId(blob), 'bad blob id');
+      must(Number.isInteger(size) && size > 0 && size <= LIMITS.blobBytes, 'file too large (max 50 MB)');
+      must(!uploads.has(blob) && !fs.existsSync(blobPath(blob)), 'blob id taken');
+      const token = enc(rand(24));
+      uploads.set(blob, { token, size, expires: Date.now() + LIMITS.uploadTtlMs });
+      return { token };
+    },
+
     // --- device linking rendezvous (ciphertext only; the secret stays in the code/QR) ---
     linkOpen(conn, { link: id }) {
       must(conn.account, 'not authenticated');
@@ -258,6 +278,8 @@ export function startServer({ port = 8080, dbPath = 'veil.db', staticDir = path.
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
     if (url.pathname === '/healthz') { res.end('ok'); return; }
+    const bm = url.pathname.match(/^\/blob\/([A-Za-z0-9_-]{22})$/);
+    if (bm) { handleBlob(req, res, bm[1]); return; }
     let p = path.normalize(decodeURIComponent(url.pathname)).replace(/^(\.\.[/\\])+/, '');
     let file = path.join(staticDir, p);
     if (!file.startsWith(staticDir)) { res.writeHead(403).end(); return; }
@@ -274,6 +296,54 @@ export function startServer({ port = 8080, dbPath = 'veil.db', staticDir = path.
     });
     fs.createReadStream(file).pipe(res);
   });
+
+  function handleBlob(req, res, id) {
+    const file = blobPath(id);
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      fs.stat(file, (err, st) => {
+        if (err) { res.writeHead(404).end(); return; }
+        res.writeHead(200, {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': st.size,
+          'Cache-Control': 'private, max-age=2592000, immutable',
+          'X-Content-Type-Options': 'nosniff',
+        });
+        if (req.method === 'HEAD') res.end(); else fs.createReadStream(file).pipe(res);
+      });
+      return;
+    }
+    if (req.method !== 'PUT') { res.writeHead(405).end(); return; }
+    const u = uploads.get(id);
+    if (!u || u.expires < Date.now() || req.headers['x-upload-token'] !== u.token) { res.writeHead(403).end(); return; }
+    uploads.delete(id);
+    const tmp = file + '.part';
+    const out = fs.createWriteStream(tmp);
+    let n = 0, failed = false;
+    const fail = (code) => {
+      if (failed) return;
+      failed = true;
+      req.destroy();
+      out.destroy();
+      fs.rm(tmp, { force: true }, () => {});
+      if (!res.headersSent) res.writeHead(code).end();
+    };
+    req.on('data', (chunk) => {
+      if (failed) return;
+      n += chunk.length;
+      if (n > u.size) return fail(413);
+      if (!out.write(chunk)) { req.pause(); out.once('drain', () => req.resume()); }
+    });
+    req.on('aborted', () => fail(400));
+    req.on('error', () => fail(400));
+    out.on('error', () => fail(500));
+    req.on('end', () => {
+      if (failed) return;
+      out.end(() => {
+        if (n !== u.size) return fail(400);
+        fs.rename(tmp, file, (err) => (err ? fail(500) : res.writeHead(201).end()));
+      });
+    });
+  }
 
   // ---------- WebSocket RPC ----------
   const wss = new WebSocketServer({ server, path: '/ws', maxPayload: LIMITS.frame });
@@ -317,6 +387,18 @@ export function startServer({ port = 8080, dbPath = 'veil.db', staticDir = path.
   const janitor = setInterval(() => {
     q.expire.run(Date.now() - LIMITS.mailboxTtlMs);
     for (const [id, l] of links) if (l.expires < Date.now()) links.delete(id);
+    for (const [id, u] of uploads) if (u.expires < Date.now()) uploads.delete(id);
+    fs.readdir(blobDir, (err, names) => {
+      if (err) return;
+      for (const name of names) {
+        const f = path.join(blobDir, name);
+        fs.stat(f, (e, st) => {
+          if (e) return;
+          const age = Date.now() - st.mtimeMs;
+          if (age > LIMITS.blobTtlMs || (name.endsWith('.part') && age > LIMITS.uploadTtlMs)) fs.rm(f, { force: true }, () => {});
+        });
+      }
+    });
   }, 60_000);
 
   return new Promise((resolve) => {
@@ -324,6 +406,7 @@ export function startServer({ port = 8080, dbPath = 'veil.db', staticDir = path.
       log(`veil relay listening on :${server.address().port}`);
       resolve({
         port: server.address().port,
+        blobDir,
         close: () => { clearInterval(janitor); wss.close(); server.close(); for (const c of wss.clients) c.terminate(); },
       });
     });

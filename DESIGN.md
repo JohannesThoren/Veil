@@ -13,7 +13,7 @@ An account is a random ID. You add people by ID or QR. You add devices by code o
 | Multi-device | Every device has its own keys and sessions. Linking copies the identity key over an encrypted, approved channel. |
 | Detect MITM | TOFU key pinning, QR codes that carry the key, 60-digit safety numbers. |
 
-Non-goals for the MVP: metadata hiding (sealed sender), push notifications while the app is closed, attachments, voice/video, account recovery without a device.
+Non-goals for the MVP: metadata hiding (sealed sender), push notifications while the app is closed, non-image attachments, voice/video, account recovery without a device.
 
 ## 2. Identities and IDs
 
@@ -82,7 +82,16 @@ Existing device E                     Relay                    New device N
 - Explicit approval on the old device stops a leaked code from being used silently.
 - Unlinking signs `veil/remove-device/v1|acct|dev` with IK. The server deletes the device, and the device wipes itself when told.
 
-## 6. What the server stores
+## 6. Images (up to 50 MB)
+
+1. The sender's device picks a fresh random 256-bit key and encrypts the image with XChaCha20-Poly1305 (nonce prepended).
+2. It asks the relay for a one-time upload token bound to a random 128-bit blob id and the exact ciphertext size (`blobToken`). Then it `PUT`s the ciphertext to `/blob/<id>`. The relay refuses anything above 50 MB + 40 bytes, or not matching the declared size.
+3. The message itself (end-to-end encrypted like any text) carries `{id, key, size, mime, name, w, h, thumb}`. `thumb` is a ~24 px JPEG preview so the bubble has the right shape and a blurred placeholder before download.
+4. Receivers `GET /blob/<id>` and decrypt. The AEAD tag authenticates the bytes, so a swapped or corrupted blob is rejected. Decrypted images are cached in IndexedDB, so each device downloads once.
+
+The relay sees only an opaque blob and its size. It never sees the key, the file type, the name or who it's for, beyond the sender being authenticated at upload. Blobs expire after 30 days. Linked devices receive the keys with the history, so they can open older images while the blob still exists. Group images are encrypted once and the key is delivered through the sender-key message, so each member doesn't need a separate upload.
+
+## 7. What the server stores
 
 | Table | Contents |
 |---|---|
@@ -90,14 +99,15 @@ Existing device E                     Relay                    New device N
 | `devices` | device id, signing pub key, cert, device name **encrypted with a key derived from IK** (only your own devices can read it) |
 | `spks` / `opks` | public prekeys |
 | `mailbox` | per-device queue of `{from account/device, kind, ciphertext, ts}`. Deleted on ack, expired after 30 days |
+| `blobs/` (files) | encrypted image blobs, random ids, deleted after 30 days |
 
 Server-visible metadata: who sends to whom and when, message sizes, number of devices. Not visible: names, contacts, group membership or names, content, which messages are group messages beyond a `g` kind flag (the recipients share one ciphertext).
 
-## 7. Client storage
+## 8. Client storage
 
-IndexedDB key-value (`me`, `spk`, `opk:*`, `sess:*`, `id:*`, `contact:*`, `group:*`, `mysk:*`, `rsk:*`, `chat:*`, `msg:*`). Keys aren't yet encrypted at rest. See the roadmap.
+IndexedDB key-value (`me`, `spk`, `opk:*`, `sess:*`, `id:*`, `contact:*`, `group:*`, `mysk:*`, `rsk:*`, `chat:*`, `msg:*`, `file:*` decrypted images). Keys aren't yet encrypted at rest. See the roadmap.
 
-## 8. Code map
+## 9. Code map
 
 ```
 shared/crypto.js     primitives (noble: ed25519/x25519, HKDF, HMAC, XChaCha20-Poly1305), IDs, safety numbers
@@ -106,18 +116,18 @@ shared/ratchet.js    Double Ratchet
 shared/senderkey.js  Sender Keys
 client/core.js       protocol client: sessions, fan-out, groups, linking, contacts (UI-agnostic)
 client/store.js      IndexedDB + in-memory stores
-server/server.js     HTTP static + WebSocket RPC relay
+server/server.js     HTTP static + encrypted blob store + WebSocket RPC relay
 server/db.js         SQLite schema (node:sqlite, no native deps)
 web/                 PWA (vanilla JS, bundled by esbuild)
 test/                crypto unit tests + multi-client end-to-end tests over real sockets
 ```
 
-## 9. Roadmap / known gaps
+## 10. Roadmap / known gaps
 
 1. **Sealed sender**: hide the sender from the server (sender certificate inside the ciphertext, delivery tokens against spam).
 2. **Web Push** (VAPID) so notifications arrive when the app is closed. The payload would be a content-free wake-up.
 3. **At-rest encryption** of IndexedDB with a passphrase / WebAuthn PRF key.
-4. **Attachments**: encrypt client-side with a random key, upload the blob, send key + hash in the message.
+4. **Other attachments** (files, video, voice notes) reuse the image pipeline. Very large files would need chunked streaming encryption instead of one in-memory buffer. Per-account storage quotas on the relay.
 5. **MLS** for large groups. Multi-admin conflict resolution (today concurrent admin edits are last-valid-version-wins).
 6. **Abuse controls**: per-account send quotas, proof-of-work or invite tokens for registration. Today there is only a per-connection rate limit.
 7. **Backups / recovery**: optional encrypted backup keyed by a recovery code. Without it, losing all devices loses the account (by design).

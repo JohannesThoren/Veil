@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import WebSocket from 'ws';
+import { randomBytes } from 'node:crypto';
 import { startServer } from '../server/server.js';
 import { VeilClient } from '../client/core.js';
 import { MemoryStore } from '../client/store.js';
@@ -146,6 +147,49 @@ try {
     await waitFor(async () => (await bob.group(gid)).left, 'bob other device knows');
     await carol.sendText(gchat.id, 'carol is back');
     await waitFor(async () => (await texts(alice2, gchat.id)).includes('carol is back'), 'alice2 gets carol');
+  });
+
+  await t('images: encrypted before upload, key travels E2E, every device can open it', async () => {
+    const marker = Buffer.from('PLAINTEXT-IMAGE-MARKER');
+    const bytes = new Uint8Array(Buffer.concat([marker, randomBytes(3 * 1024 * 1024), marker]));
+    const sent = await alice.sendText(`dm:${bob.me.account}`, 'sunset', { attachment: { bytes, mime: 'image/jpeg', name: 'sunset.jpg', w: 4000, h: 3000, thumb: 'data:image/jpeg;base64,AAAA' } });
+    assert.equal(sent.status, 'sent');
+    for (const c of [bob, bob2, alice2]) {
+      const m = await waitFor(async () => (await c.messages(`dm:${c === alice2 ? bob.me.account : alice.me.account}`)).find((x) => x.id === sent.id), 'image msg');
+      assert.equal(m.text, 'sunset');
+      assert.equal(m.att.w, 4000);
+      const got = await c.getAttachment(m.att);
+      assert.ok(Buffer.from(got).equals(Buffer.from(bytes)), 'bytes round-trip');
+    }
+    assert.equal((await bob.chat(`dm:${alice.me.account}`)).last.text, '📷 sunset');
+    const stored = fs.readFileSync(path.join(srv.blobDir, sent.att.id));
+    assert.ok(!stored.includes(marker), 'server holds ciphertext only');
+    assert.equal(stored.length, bytes.length + 40);
+  });
+
+  await t('images: group photo without caption; 50 MB accepted, larger refused', async () => {
+    const big = new Uint8Array(randomBytes(50 * 1024 * 1024));
+    const t0 = Date.now();
+    const m = await carol.sendText(gchat.id, '', { attachment: { bytes: big, mime: 'image/png', name: 'big.png' } });
+    assert.equal(m.status, 'sent', m.error);
+    const got = await waitFor(async () => (await alice2.messages(gchat.id)).find((x) => x.id === m.id), 'group image');
+    assert.equal((await alice2.getAttachment(got.att)).length, big.length);
+    console.log(`    (50 MB encrypt+upload+download+decrypt: ${Date.now() - t0} ms)`);
+    assert.equal((await alice.chat(gchat.id)).last.text, '📷 Photo');
+    await assert.rejects(carol.sendText(gchat.id, '', { attachment: { bytes: new Uint8Array(50 * 1024 * 1024 + 1), mime: 'image/png' } }), /50 MB/);
+    await assert.rejects(carol.rpc('blobToken', { blob: 'A'.repeat(22), size: 60 * 1024 * 1024 }), /too large/);
+    await assert.rejects(carol.sendText(gchat.id, '', { attachment: { bytes: new Uint8Array(10), mime: 'application/pdf' } }), /Only images/);
+  });
+
+  await t('images: tampered or wrong-key blobs are rejected', async () => {
+    const m = await alice.sendText(`dm:${bob.me.account}`, '', { attachment: { bytes: new Uint8Array(randomBytes(5000)), mime: 'image/webp' } });
+    const f = path.join(srv.blobDir, m.att.id);
+    const buf = fs.readFileSync(f); buf[100] ^= 1; fs.writeFileSync(f, buf);
+    const bm = await waitFor(async () => (await bob.messages(`dm:${alice.me.account}`)).find((x) => x.id === m.id), 'msg');
+    await assert.rejects(bob.getAttachment(bm.att));
+    // uploads need a token bound to the id and size
+    const r = await fetch(`http://localhost:${srv.port}/blob/${'B'.repeat(22)}`, { method: 'PUT', body: 'x' });
+    assert.equal(r.status, 403);
   });
 
   await t('offline delivery: queued at relay, delivered on reconnect', async () => {

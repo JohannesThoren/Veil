@@ -21,7 +21,7 @@ await build({
   logLevel: 'info',
 });
 
-for (const f of ['index.html', 'app.css', 'sw.js', 'manifest.webmanifest', 'icon.svg', 'icon-maskable.svg']) {
+for (const f of ['index.html', 'app.css', 'theme.js', 'sw.js', 'manifest.webmanifest', 'icon.svg', 'icon-maskable.svg']) {
   fs.copyFileSync(path.join(root, 'web', f), path.join(out, f));
 }
 console.log('built web/dist');

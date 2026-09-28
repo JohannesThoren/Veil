@@ -6,6 +6,8 @@ End-to-end encrypted messenger with **no username, phone number or email**.
 - Add people by typing their ID or scanning their QR code. The QR also carries their key, so scanning it verifies them.
 - Add devices with a 24-character code or a QR from a device you're already signed in on, approved on that device.
 - Signal protocol (X3DH + Double Ratchet) for 1:1, Sender Keys for groups. The relay only ever sees ciphertext.
+- Send images up to 50 MB (button, paste or drag-and-drop). They're encrypted on your device before upload.
+- Light and dark themes: follows your system, or pick one in Settings or with the moon/sun button.
 - A PWA: works in any modern browser, installable on phone and desktop.
 
 See [DESIGN.md](DESIGN.md) for the protocol, threat model and roadmap.
@@ -21,7 +23,7 @@ or without Docker (Node ≥ 22.13):
 ```bash
 npm install
 npm run build
-npm start                           # PORT=8080 DB_PATH=veil.db by default
+npm start                           # PORT=8080 DB_PATH=veil.db by default; images go to ./blobs (BLOB_DIR)
 npm test                            # crypto unit tests + multi-client end-to-end tests
 ```
 
@@ -37,10 +39,11 @@ location / {
     proxy_set_header Connection "upgrade";
     proxy_set_header Host $host;
     proxy_read_timeout 1h;
+    client_max_body_size 51m;       # images up to 50 MB
 }
 ```
 
-In Nginx Proxy Manager / Nginx UI, just enable "WebSockets support" on the proxy host.
+In Nginx Proxy Manager / Nginx UI, enable "WebSockets support" on the proxy host and raise the upload limit (`client_max_body_size 51m`). Nginx's default of 1 MB would block larger images.
 
 ## Using it
 
@@ -53,4 +56,4 @@ In Nginx Proxy Manager / Nginx UI, just enable "WebSockets support" on the proxy
 
 ## Status
 
-MVP. Not independently audited, so don't rely on it for high-risk use yet. Main gaps: no push notifications while closed, no attachments, no at-rest encryption of local storage, sender is visible to the server (no sealed sender). All are in DESIGN.md §9.
+MVP. Not independently audited, so don't rely on it for high-risk use yet. Main gaps: no push notifications while closed, images only (no other file types), no at-rest encryption of local storage, sender is visible to the server (no sealed sender). All are in DESIGN.md §10.

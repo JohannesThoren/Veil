@@ -1,6 +1,6 @@
 // App-shell cache so Veil opens offline. Network-first: updates apply on next load.
-const CACHE = 'veil-shell-v1';
-const SHELL = ['/', '/app.js', '/app.css', '/manifest.webmanifest', '/icon.svg'];
+const CACHE = 'veil-shell-v2';
+const SHELL = ['/', '/app.js', '/app.css', '/theme.js', '/manifest.webmanifest', '/icon.svg'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -10,7 +10,7 @@ self.addEventListener('activate', (e) => {
 });
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
-  if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname === '/ws') return;
+  if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname === '/ws' || url.pathname.startsWith('/blob/')) return;
   e.respondWith(
     fetch(e.request)
       .then((res) => {

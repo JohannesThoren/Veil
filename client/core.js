@@ -1,7 +1,7 @@
 // Veil client core: account, sessions, fan-out, groups, device linking.
 // UI-agnostic; runs in the browser (IdbStore + WebSocket) and in Node (MemoryStore + ws) for tests.
 import {
-  Ed, X, enc, dec, utf8, fromUtf8, concat, kdf, seal, open, stmt,
+  Ed, X, enc, dec, utf8, fromUtf8, concat, kdf, seal, open, stmt, rand,
   newAccountId, newDeviceId, newId, normalizeCode, isAccountId, safetyNumber, ALPHABET,
 } from '../shared/crypto.js';
 import { customAlphabet } from 'nanoid';
@@ -16,12 +16,25 @@ const MAX_SESSIONS_PER_DEVICE = 4;
 const LINK_HISTORY_PER_CHAT = 300;
 const newLinkPart = customAlphabet(ALPHABET, 8);
 const newLinkSecret = customAlphabet(ALPHABET, 16);
+export const MAX_ATTACHMENT = 50 * 1024 * 1024;
+const PHOTO_LABEL = '📷 Photo';
+
+function validAttachment(a) {
+  return a && typeof a === 'object'
+    && /^[A-Za-z0-9_-]{22}$/.test(a.id) && /^[A-Za-z0-9_-]{43}$/.test(a.key)
+    && Number.isInteger(a.size) && a.size > 0 && a.size <= MAX_ATTACHMENT
+    && typeof a.mime === 'string' && /^image\/[a-z0-9.+-]+$/.test(a.mime)
+    && (a.thumb == null || (typeof a.thumb === 'string' && a.thumb.length < 30000 && a.thumb.startsWith('data:image/')))
+    && (a.w == null || (Number.isInteger(a.w) && a.w > 0)) && (a.h == null || (Number.isInteger(a.h) && a.h > 0));
+}
+const cleanAttachment = (a) => ({ id: a.id, key: a.key, size: a.size, mime: a.mime, name: String(a.name ?? '').slice(0, 200), w: a.w ?? null, h: a.h ?? null, thumb: a.thumb ?? null });
 
 export class IdentityChangedError extends Error {
   constructor(account) { super(`Identity key for ${account} changed — possible interception`); this.account = account; }
 }
 
 const uniq = (a) => [...new Set(a)];
+const previewText = (text, att) => (att ? (text ? `📷 ${text}` : PHOTO_LABEL) : text);
 const pad = (n) => String(n).padStart(15, '0');
 
 export class VeilClient {
@@ -38,6 +51,8 @@ export class VeilClient {
     this._linkHandlers = new Map();
     this._closed = false;
     this._backoff = 500;
+    this.httpBase = url.replace(/^ws/, 'http').replace(/\/ws$/, '');
+    this._downloads = new Map();
   }
 
   // ---------------- events ----------------
@@ -448,6 +463,8 @@ export class VeilClient {
   async _onMessage(from, c, env) {
     const mine = from.a === this.me.account;
     if (typeof c.text !== 'string' || typeof c.id !== 'string') return;
+    const att = c.att != null ? (validAttachment(c.att) ? cleanAttachment(c.att) : undefined) : null;
+    if (att === undefined || (!c.text && !att)) return;
     let chatId;
     if (c.to?.group) {
       const g = await this.store.get(`group:${c.to.group}`);
@@ -473,12 +490,12 @@ export class VeilClient {
       if ((await this.store.get(k)) !== name) { await this.store.put(k, name); this.emit('change', { type: 'contact', account: from.a }); }
     }
     if (await this.store.get(`mid:${c.id}`)) return;
-    const msg = { id: c.id, chatId, from: from.a, fromDevice: from.d, text: c.text.slice(0, 20000), ts: env.ts, mine, status: mine ? 'sent' : 'received' };
+    const msg = { id: c.id, chatId, from: from.a, fromDevice: from.d, text: c.text.slice(0, 20000), att, ts: env.ts, mine, status: mine ? 'sent' : 'received' };
     const key = `msg:${chatId}:${pad(env.ts)}:${c.id}`;
     await this.store.put(key, msg);
     await this.store.put(`mid:${c.id}`, key);
     const chat = await this.store.get(`chat:${chatId}`);
-    chat.last = { text: msg.text, ts: msg.ts, from: from.a };
+    chat.last = { text: previewText(msg.text, att), ts: msg.ts, from: from.a };
     chat.updated = msg.ts;
     if (mine) chat.unread = 0; else chat.unread = (chat.unread ?? 0) + 1;
     await this.store.put(`chat:${chatId}`, chat);
@@ -578,29 +595,46 @@ export class VeilClient {
     }
   }
   async deleteChat(chatId) {
-    for (const [k, v] of await this.store.entries(`msg:${chatId}:`)) { await this.store.del(k); await this.store.del(`mid:${v.id}`); }
+    for (const [k, v] of await this.store.entries(`msg:${chatId}:`)) {
+      await this.store.del(k);
+      await this.store.del(`mid:${v.id}`);
+      if (v.att) await this.store.del(`file:${v.att.id}`);
+    }
     await this.store.del(`chat:${chatId}`);
     this.emit('change', { type: 'chat', chatId });
   }
 
-  async sendText(chatId, text) {
-    text = text.trim();
-    if (!text) return;
+  /**
+   * Send a text and/or an image. attachment = { bytes: Uint8Array, mime, name, w, h, thumb }.
+   * Images are encrypted here with a fresh key, uploaded as opaque bytes, and the key travels
+   * inside the end-to-end encrypted message.
+   */
+  async sendText(chatId, text, { attachment } = {}) {
+    text = (text ?? '').trim();
+    if (!text && !attachment) return;
+    if (attachment) {
+      if (!(attachment.bytes instanceof Uint8Array)) throw new Error('attachment.bytes must be a Uint8Array');
+      if (attachment.bytes.length > MAX_ATTACHMENT) throw new Error('Images can be at most 50 MB');
+      if (!/^image\//.test(attachment.mime ?? '')) throw new Error('Only images can be sent');
+    }
     const chat = await this.store.get(`chat:${chatId}`);
     if (!chat) throw new Error('No such chat');
     const id = newId();
     const ts = Date.now();
     const key = `msg:${chatId}:${pad(ts)}:${id}`;
-    const msg = { id, chatId, from: this.me.account, fromDevice: this.me.deviceId, text, ts, mine: true, status: 'sending' };
+    const att = attachment ? cleanAttachment({ ...attachment, id: enc(rand(16)), key: enc(rand(32)), size: attachment.bytes.length }) : null;
+    if (att) await this.store.put(`file:${att.id}`, attachment.bytes);
+    const msg = { id, chatId, from: this.me.account, fromDevice: this.me.deviceId, text, att, ts, mine: true, status: 'sending' };
     await this.store.put(key, msg);
     await this.store.put(`mid:${id}`, key);
-    chat.last = { text, ts, from: this.me.account };
+    chat.last = { text: previewText(text, att), ts, from: this.me.account };
     chat.updated = ts;
     if (chat.request) chat.request = false;
     await this.store.put(`chat:${chatId}`, chat);
     this.emit('change', { type: 'chat', chatId });
     try {
-      const content = { t: 'msg', id, text, profile: this.me.profileName ? { name: this.me.profileName } : undefined };
+      if (att) await this._uploadBlob(att.id, seal(dec(att.key), attachment.bytes));
+      const content = { t: 'msg', id, text, att: att ?? undefined, profile: this.me.profileName ? { name: this.me.profileName } : undefined };
       if (chat.kind === 'dm') {
         const contact = await this.store.get(`contact:${chat.peer}`);
         if (contact?.status === 'request') await this.updateContact(chat.peer, { status: 'accepted' });
@@ -619,13 +653,49 @@ export class VeilClient {
     return msg;
   }
 
+  async _uploadBlob(blobId, ciphertext) {
+    const { token } = await this.rpc('blobToken', { blob: blobId, size: ciphertext.length });
+    const res = await fetch(`${this.httpBase}/blob/${blobId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Upload-Token': token },
+      body: ciphertext,
+    });
+    if (!res.ok) throw new Error(res.status === 413 ? 'Image is too large' : `Upload failed (${res.status})`);
+  }
+
+  /** Decrypted bytes of an attachment; downloaded once, then kept locally. */
+  async getAttachment(att) {
+    const cached = await this.store.get(`file:${att.id}`);
+    if (cached) return cached;
+    if (this._downloads.has(att.id)) return this._downloads.get(att.id);
+    const p = (async () => {
+      const res = await fetch(`${this.httpBase}/blob/${att.id}`);
+      if (res.status === 404) throw new Error('This image has expired on the server');
+      if (!res.ok) throw new Error(`Download failed (${res.status})`);
+      const ct = new Uint8Array(await res.arrayBuffer());
+      if (ct.length > MAX_ATTACHMENT + 40) throw new Error('Attachment too large');
+      const bytes = open(dec(att.key), ct); // authenticates: a swapped or corrupted blob fails here
+      await this.store.put(`file:${att.id}`, bytes);
+      return bytes;
+    })();
+    this._downloads.set(att.id, p);
+    try { return await p; } finally { this._downloads.delete(att.id); }
+  }
+
   async retry(chatId, msgId) {
     const key = await this.store.get(`mid:${msgId}`);
     const msg = key && await this.store.get(key);
     if (!msg || msg.status !== 'failed') return;
+    let attachment;
+    if (msg.att) {
+      const bytes = await this.store.get(`file:${msg.att.id}`);
+      if (!bytes) throw new Error('The image is no longer on this device');
+      attachment = { ...msg.att, bytes };
+      await this.store.del(`file:${msg.att.id}`);
+    }
     await this.store.del(key);
     await this.store.del(`mid:${msgId}`);
-    return this.sendText(chatId, msg.text);
+    return this.sendText(chatId, msg.text, { attachment });
   }
 
   // ---------------- groups ----------------
