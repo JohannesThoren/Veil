@@ -389,17 +389,33 @@ export function startServer({ port = 8080, dbPath = 'veil.db', staticDir = path.
     let p = path.normalize(decodeURIComponent(url.pathname)).replace(/^(\.\.[/\\])+/, '');
     let file = path.join(staticDir, p);
     if (!file.startsWith(staticDir)) { res.writeHead(403).end(); return; }
-    if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) file = path.join(staticDir, 'index.html');
+    if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+      // Unknown asset (e.g. an old hashed file name): 404 instead of serving HTML as CSS/JS.
+      if (path.extname(p)) { res.writeHead(404, { 'Cache-Control': 'no-store' }).end(); return; }
+      file = path.join(staticDir, 'index.html'); // client-side route
+    }
     if (!fs.existsSync(file)) { res.writeHead(404).end('Build the web client first: npm run build'); return; }
     const ext = path.extname(file);
-    res.writeHead(200, {
+    const st = fs.statSync(file);
+    const etag = `"${st.size.toString(36)}-${Math.floor(st.mtimeMs).toString(36)}"`;
+    const base = path.basename(file);
+    const cache = /-[0-9a-f]{10}\.(js|css)$|-[A-Z0-9]{8}\.js(\.map)?$/.test(base)
+      ? 'public, max-age=31536000, immutable'   // content-hashed: never changes
+      : ext === '.html' || base === 'sw.js' || base === 'manifest.webmanifest'
+        ? 'no-cache'                              // always revalidate (cheap: ETag → 304)
+        : 'public, max-age=86400';
+    const headers = {
       'Content-Type': MIME[ext] ?? 'application/octet-stream',
-      'Cache-Control': ext === '.html' || file.endsWith('sw.js') ? 'no-cache' : 'public, max-age=3600',
+      'Cache-Control': cache,
+      ETag: etag,
       'Content-Security-Policy': "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
       'X-Content-Type-Options': 'nosniff',
       'Referrer-Policy': 'no-referrer',
       'Permissions-Policy': 'camera=(self), microphone=(), geolocation=()',
-    });
+    };
+    if (req.headers['if-none-match'] === etag) { res.writeHead(304, headers).end(); return; }
+    res.writeHead(200, headers);
+    if (req.method === 'HEAD') { res.end(); return; }
     fs.createReadStream(file).pipe(res);
   });
 

@@ -47,6 +47,10 @@ location / {
 
 In Nginx Proxy Manager / Nginx UI, enable "WebSockets support" on the proxy host and raise the upload limit (`client_max_body_size 51m`). Nginx's default of 1 MB would block larger images.
 
+## Updating
+
+`docker compose up -d --build`. JS/CSS files get a content hash in their name at build time (`app-3f9a1c2b.css`) and HTML is always revalidated, so browsers pick up a new version on the next load, never a mix of old and new files.
+
 ## Admin and invites
 
 Open **`/admin`** (e.g. `https://veil.example.com/admin`) and sign in with the admin token.
