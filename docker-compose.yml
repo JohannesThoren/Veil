@@ -1,0 +1,13 @@
+services:
+  veil:
+    build: .
+    image: veil:latest
+    container_name: veil
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - veil-data:/data
+
+volumes:
+  veil-data:
