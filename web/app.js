@@ -4,7 +4,7 @@
 import QRCode from 'qrcode';
 import jsQR from 'jsqr';
 import { VeilClient, IdentityChangedError, MAX_ATTACHMENT } from '../client/core.js';
-import { CallManager } from './calls.js';
+import { CallManager, testConnectivity } from './calls.js';
 import { IdbStore } from '../client/store.js';
 import { formatId } from '../shared/crypto.js';
 
@@ -870,7 +870,7 @@ async function sysText(s, nameOf) {
 
 // ------------------------------------------------------------------ calls UI
 const callUi = { id: null, minimized: false, timer: null, tiles: new Map() };
-const END_TEXT = { declined: 'Call declined', busy: 'They’re busy', 'no-answer': 'No answer', failed: 'Call couldn’t connect' };
+const END_TEXT = { declined: 'Call declined', busy: 'They’re busy', 'no-answer': 'No answer', failed: 'Call couldn’t connect. Run Settings → Test calls' };
 
 // Redraws are serialized: call events arrive in bursts and two overlapping async redraws would
 // each build their own call screen.
@@ -1279,6 +1279,8 @@ async function settingsModal() {
       <div class="divider"></div>
       <div class="kv" style="align-items:center"><span>Appearance</span><div class="seg" role="radiogroup" aria-label="Theme">
         <button data-theme-set="system">${icon('monitor')} System</button><button data-theme-set="light">${icon('sun')} Light</button><button data-theme-set="dark">${icon('moon')} Dark</button></div></div>
+      <div class="kv" style="align-items:center"><span>Calls</span><button class="btn" id="st-calltest" style="height:32px">${icon('phone')} Test connection</button></div>
+      <div id="st-calltest-out"></div>
       <div class="kv" style="align-items:center"><span>Notifications</span><div id="st-notif"></div></div>
       <p class="muted small" style="margin:4px 0 0" id="st-notif-note"></p>
       <div class="kv" style="align-items:center" id="st-install-row"><span>App</span>${canInstall() ? installButton('btn') : `<span class="muted small">${isStandalone() ? 'Installed' : 'Use your browser’s “Install” or “Add to Home Screen”'}</span>`}</div>
@@ -1291,6 +1293,30 @@ async function settingsModal() {
   $('#st-id', m.el).onclick = () => myIdModal();
   $('#st-link', m.el).onclick = () => { m.close(); linkDeviceModal(); };
   wireInstall(m.el);
+  $('#st-calltest', m.el).onclick = async (e) => {
+    const btn = e.currentTarget;
+    const out = $('#st-calltest-out', m.el);
+    btn.disabled = true;
+    out.innerHTML = '<p class="muted small"><span class="spinner" style="width:12px;height:12px;border-width:2px;vertical-align:-1px"></span> Testing (up to 8 s)…</p>';
+    try {
+      const servers = await client.iceServers();
+      const r = await testConnectivity(servers);
+      const hasTurn = servers.some((s) => s.username);
+      const row = (ok, label, hint) => `<div class="kv"><span>${ok ? '✅' : hint ? '⚠️' : '—'} ${label}</span><span class="muted small" style="text-align:right">${ok ? 'OK' : esc(hint || 'not configured')}</span></div>`;
+      out.innerHTML = `<div class="notice" style="display:block">
+        ${row(r.host, 'Local network', 'no local candidates')}
+        ${row(r.srflx, 'Public address (STUN)', 'blocked: calls outside your network need TURN')}
+        ${row(r.relay, 'Relay (TURN)', hasTurn ? 'TURN unreachable: check ports 3478 + 49160–49200/udp, TURN_DOMAIN and TURN_SECRET' : '')}
+        <p class="muted small" style="margin:8px 0 0">${r.relay ? 'Calls should connect from any network.'
+          : r.srflx ? 'Calls work on the same network and between most home networks. Mobile data and strict firewalls need TURN.'
+          : 'Calls only work on the same network.'}</p>
+        ${r.errors.length ? `<details style="margin-top:6px"><summary class="small muted">Details</summary><pre class="small mono" style="white-space:pre-wrap;margin:6px 0 0">${esc(r.errors.slice(0, 6).join('\n'))}</pre></details>` : ''}
+      </div>`;
+    } catch (err) {
+      out.innerHTML = `<p class="small" style="color:var(--danger)">${esc(errText(err))}</p>`;
+    }
+    btn.disabled = false;
+  };
   const paintNotif = () => {
     const st = notifState();
     const box = $('#st-notif', m.el), note = $('#st-notif-note', m.el);

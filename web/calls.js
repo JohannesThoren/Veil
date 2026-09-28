@@ -13,6 +13,48 @@
 import { newId } from '../shared/crypto.js';
 
 export const RING_MS = 45_000;
+export const CONNECT_MS = 30_000;
+const FALLBACK_ICE = [{ urls: ['stun:stun.cloudflare.com:3478'] }];
+
+/** RTCPeerConnection that never fails to construct: bad server entries are dropped, not fatal. */
+export function makePeerConnection(iceServers, relayOnly = false) {
+  const opts = (servers) => ({ iceServers: servers, bundlePolicy: 'max-bundle', iceTransportPolicy: relayOnly ? 'relay' : 'all' });
+  try { return new RTCPeerConnection(opts(iceServers)); } catch (e) { console.warn('ICE config rejected, filtering', e.message); }
+  const ok = [];
+  for (const s of iceServers ?? []) {
+    for (const u of [].concat(s.urls ?? [])) {
+      try { new RTCPeerConnection({ iceServers: [{ ...s, urls: [u] }] }).close(); ok.push({ ...s, urls: [u] }); } catch { /* skip */ }
+    }
+  }
+  return new RTCPeerConnection(opts(ok.length ? ok : FALLBACK_ICE));
+}
+
+/**
+ * Connectivity check for Settings: which kinds of ICE candidates can this device gather?
+ * host = local network, srflx = STUN (public address), relay = TURN.
+ */
+export async function testConnectivity(iceServers, ms = 8000) {
+  const result = { host: false, srflx: false, relay: false, servers: iceServers, errors: [] };
+  let pc;
+  try { pc = makePeerConnection(iceServers); } catch (e) { result.errors.push(e.message); return result; }
+  pc.createDataChannel('probe');
+  pc.onicecandidate = (e) => {
+    const c = e.candidate?.candidate;
+    if (!c) return;
+    const type = / typ (host|srflx|prflx|relay)/.exec(c)?.[1];
+    if (type === 'host') result.host = true;
+    if (type === 'srflx' || type === 'prflx') result.srflx = true;
+    if (type === 'relay') result.relay = true;
+  };
+  pc.onicecandidateerror = (e) => { if (e.errorCode && e.errorCode !== 701) result.errors.push(`${e.url ?? ''} ${e.errorCode} ${e.errorText ?? ''}`.trim()); };
+  await pc.setLocalDescription(await pc.createOffer());
+  await new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    pc.onicegatheringstatechange = () => { if (pc.iceGatheringState === 'complete') { clearTimeout(t); resolve(); } };
+  });
+  pc.close();
+  return result;
+}
 const uniq = (a) => [...new Set(a)];
 
 function iceGathered(pc, ms = 2500) {
@@ -245,7 +287,7 @@ export class CallManager {
     const id = info.id;
     this.call.ringTimer = setTimeout(() => {
       if (this.call?.id === id && ![...this.call.peers.values()].some((p) => p.state === 'connected')) this.hangup('failed');
-    }, 30_000);
+    }, CONNECT_MS);
   }
 
   _end(reason) {
@@ -280,7 +322,7 @@ export class CallManager {
     // localStorage "veil-relay" = "1" forces every call through TURN (useful to test your TURN server)
     let relayOnly = false;
     try { relayOnly = localStorage.getItem('veil-relay') === '1'; } catch { /* ignore */ }
-    const pc = new RTCPeerConnection({ iceServers: await this.client.iceServers(), bundlePolicy: 'max-bundle', iceTransportPolicy: relayOnly ? 'relay' : 'all' });
+    const pc = makePeerConnection(await this.client.iceServers().catch(() => []), relayOnly);
     const p = {
       a, d, pc, stream: new MediaStream(), state: 'connecting',
       polite: this.myKey > k, makingOffer: false, ignoreOffer: false, tracksAdded: false,
@@ -330,7 +372,7 @@ export class CallManager {
     c.peers.delete(k);
     try { p.pc.close(); } catch { /* ignore */ }
     // 1:1 ends when the other side goes; a group call ends when we're the last one left
-    if (c.kind === 'dm' || (c.peers.size === 0 && c.status === 'active')) this._end('ended');
+    if (c.kind === 'dm' || (c.peers.size === 0 && c.status === 'active')) this._end(c.status === 'active' ? 'ended' : 'failed');
     else this._emit();
   }
 
@@ -394,7 +436,14 @@ export class CallManager {
           // We're already in: connect to the newcomer. Adding our tracks triggers the offer.
           const p = await this._peer(from.a, from.d);
           p.addTracks();
-          if (call.status === 'ringing') call.status = 'connecting';
+          if (call.status === 'ringing') {
+            call.status = 'connecting';
+            clearTimeout(call.ringTimer);
+            const id = call.id;
+            call.ringTimer = setTimeout(() => {
+              if (this.call?.id === id && this.call.status !== 'active') this.hangup('failed');
+            }, CONNECT_MS);
+          }
           this.tones.stop();
           this._emit();
         }

@@ -16,7 +16,7 @@ services:
       # Set when running behind a reverse proxy, so login rate limits use the real client IP.
       TRUST_PROXY: "1"
       # Calls: the relay hands out short-lived TURN credentials signed with this shared secret.
-      TURN_URLS: "turn:${TURN_DOMAIN}:3478?transport=udp,turn:${TURN_DOMAIN}:3478?transport=tcp"
+      TURN_URLS: "turn:${TURN_DOMAIN:-}:3478?transport=udp,turn:${TURN_DOMAIN:-}:3478?transport=tcp"
       TURN_SECRET: "${TURN_SECRET}"
     volumes:
       - veil-data:/data   # database, encrypted image blobs, and the push (VAPID) key

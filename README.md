@@ -77,7 +77,9 @@ Calls work out of the box on the same network. To call between networks (mobile 
 
 The relay gives each device short-lived TURN credentials (12 h, HMAC with `TURN_SECRET`), so there are no static passwords. coturn refuses to relay into private networks, so it can't be used to reach your LAN. It only ever carries encrypted media.
 
-Check that TURN works: open DevTools on two devices, run `localStorage.setItem('veil-relay','1')`, reload, then call. That forces every call through TURN. Undo with `localStorage.removeItem('veil-relay')`.
+**Check it:** in the app, **Settings → Calls → Test connection** shows whether local, STUN and TURN (relay) work from that device. Run it on a phone on mobile data. The server log (`docker logs veil | grep calls:`) shows the ICE config it hands out and warns about a missing `TURN_DOMAIN` or `TURN_SECRET`.
+
+To force every call through TURN: open DevTools on two devices, run `localStorage.setItem('veil-relay','1')`, reload, then call. That forces every call through TURN. Undo with `localStorage.removeItem('veil-relay')`.
 
 ## Notifications and installing
 
