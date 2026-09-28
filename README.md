@@ -57,6 +57,8 @@ Open **`/admin`** (e.g. `https://veil.example.com/admin`) and sign in with the a
 
 - The token is generated on first start, printed in the log, and saved as `admin-token` next to the database: `docker exec veil cat /data/admin-token`, or `docker logs veil`. Set `ADMIN_TOKEN` to choose your own.
 - **Create invites** with a label (only you see it), a use limit (once, 5, 25, unlimited) and an expiry (24 h, 7 d, 30 d, never). You get a link and a QR code. Opening the link shows "You're invited" and lets the person create an identity.
+- Set **`PUBLIC_URL`** (e.g. `https://veil.example.com`) so invite links and QR codes always use your public address, even when you open `/admin` via a LAN IP. Without it, the page warns when links would point to an internal or non-HTTPS address.
+- On iPhone, the invite page tells people to add Veil to the Home Screen first. Safari and Home Screen apps keep separate data.
 - Revoke an invite at any time. Identities already created with it are not affected.
 - The identity list shows each random ID, which invite it came from, device count and last activity. **Delete** removes the identity and signs all its devices out.
 - Sign-in is rate-limited (10 attempts / 15 min per IP). Behind a reverse proxy, set `TRUST_PROXY=1` so the real client IP is used.
