@@ -74,6 +74,19 @@ function loadVapid(dataDir) {
   return keys;
 }
 
+// ICE server URLs as browsers accept them: scheme:host[:port][?transport=udp|tcp]. Anything else would make
+// RTCPeerConnection throw and every call hang, so invalid entries (e.g. "turn::3478" from an empty TURN_DOMAIN) are dropped.
+const ICE_URL = /^(stun|stuns|turn|turns):([a-z0-9.-]+\.[a-z0-9-]+|\d{1,3}(\.\d{1,3}){3}|\[[0-9a-f:]+\])(:\d{1,5})?(\?transport=(udp|tcp))?$/i;
+function iceConfig() {
+  const list = (v) => (v ?? '').split(',').map((u) => u.trim()).filter(Boolean);
+  const turnUrls = list(process.env.TURN_URLS).filter((u) => ICE_URL.test(u) && /^turns?:/i.test(u));
+  const secret = process.env.TURN_SECRET ?? '';
+  let stunUrls = list(process.env.STUN_URLS).filter((u) => ICE_URL.test(u) && /^stuns?:/i.test(u));
+  if (!stunUrls.length && turnUrls.length) stunUrls = [...new Set(turnUrls.map((u) => u.replace(/^turns?:/i, 'stun:').replace(/\?.*$/, '')))];
+  if (!stunUrls.length) stunUrls = ['stun:stun.cloudflare.com:3478'];
+  return { stunUrls, turnUrls: secret ? turnUrls : [], secret };
+}
+
 const isBlobId = (s) => typeof s === 'string' && /^[A-Za-z0-9_-]{22}$/.test(s);
 
 const isB64 = (s, max = 200) => typeof s === 'string' && s.length > 0 && s.length <= max && /^[A-Za-z0-9_-]+$/.test(s);
@@ -90,6 +103,14 @@ export function startServer({ port = 8080, dbPath = 'veil.db', staticDir = path.
   const blobPath = (id) => path.join(blobDir, id);
 
   const ADMIN_TOKEN = adminToken ?? loadAdminToken(path.dirname(path.resolve(dbPath)), log);
+  {
+    const raw = (process.env.TURN_URLS ?? '').split(',').map((u) => u.trim()).filter(Boolean);
+    const bad = raw.filter((u) => !ICE_URL.test(u));
+    const ice = iceConfig();
+    if (bad.length) log(`calls: ignoring invalid TURN_URLS entries ${JSON.stringify(bad)} (is TURN_DOMAIN set in .env?)`);
+    if (raw.length && !process.env.TURN_SECRET) log('calls: TURN_URLS set but TURN_SECRET is empty — TURN disabled');
+    log(`calls: STUN ${ice.stunUrls.join(', ')}; TURN ${ice.turnUrls.length ? ice.turnUrls.join(', ') : 'not configured (calls between different networks may fail)'}`);
+  }
 
   // ---------- push ----------
   const vapid = loadVapid(path.dirname(path.resolve(dbPath)));
@@ -318,11 +339,7 @@ export function startServer({ port = 8080, dbPath = 'veil.db', staticDir = path.
       must(conn.account, 'not authenticated');
       const ttlMs = 12 * 3600 * 1000;
       const expires = Date.now() + ttlMs;
-      const turnUrls = (process.env.TURN_URLS ?? '').split(',').map((u) => u.trim()).filter(Boolean);
-      const secret = process.env.TURN_SECRET ?? '';
-      let stunUrls = (process.env.STUN_URLS ?? '').split(',').map((u) => u.trim()).filter(Boolean);
-      if (!stunUrls.length && turnUrls.length) stunUrls = [...new Set(turnUrls.map((u) => u.replace(/^turns?:/, 'stun:').replace(/\?.*$/, '')))];
-      if (!stunUrls.length) stunUrls = ['stun:stun.cloudflare.com:3478'];
+      const { stunUrls, turnUrls, secret } = iceConfig();
       const servers = [{ urls: stunUrls }];
       if (turnUrls.length && secret) {
         const username = `${Math.floor(expires / 1000)}:${conn.account.slice(0, 8)}`;
