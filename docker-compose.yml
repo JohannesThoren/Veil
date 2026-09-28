@@ -9,6 +9,10 @@ services:
     environment:
       # Contact for the browser push services (required by Apple). Use your own address or site.
       VAPID_SUBJECT: "mailto:you@example.com"
+      # Admin page at /admin. Leave unset to auto-generate (see /data/admin-token).
+      # ADMIN_TOKEN: "choose-a-long-random-string"
+      # Set when running behind a reverse proxy, so login rate limits use the real client IP.
+      TRUST_PROXY: "1"
     volumes:
       - veil-data:/data   # database, encrypted image blobs, and the push (VAPID) key
 

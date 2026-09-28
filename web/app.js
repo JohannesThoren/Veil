@@ -124,7 +124,10 @@ const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.p
 const canInstall = () => !isStandalone() && (!!installPrompt || isIOS());
 window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installPrompt = e; refreshInstallUI(); });
 window.addEventListener('appinstalled', () => { installPrompt = null; refreshInstallUI(); toast('Veil is installed'); });
-function refreshInstallUI() { $$('[data-install]').forEach((b) => b.classList.toggle('hidden', !canInstall())); }
+function refreshInstallUI() {
+  $$('[data-install]').forEach((b) => b.classList.toggle('hidden', !canInstall()));
+  $('.side-foot')?.classList.toggle('hidden', !canInstall());
+}
 const installButton = (cls = 'btn') => `<button class="${cls} ${canInstall() ? '' : 'hidden'}" data-install>${icon('install')} Install app</button>`;
 function wireInstall(root = document) { $$('[data-install]', root).forEach((b) => (b.onclick = installApp)); }
 async function installApp() {
@@ -408,19 +411,13 @@ function scanQR(hint = 'Point the camera at a Veil QR code') {
 }
 
 // ------------------------------------------------------------------ welcome
-function renderWelcome({ code = '' } = {}) {
+function renderWelcome({ code = '', invite = '' } = {}) {
   document.title = 'Veil';
   $('#app').innerHTML = `
   <div class="welcome"><div class="welcome-top">${themeToggle()}</div><div class="welcome-inner">
     <div class="brand">${LOGO}<h1>Veil</h1></div>
     <p class="tagline">Private messaging with no phone number, email or username.</p>
-    <div class="card">
-      <h2>Create a new identity</h2>
-      <p>You get a random ID. Share it, or a QR code, with people you want to talk to.</p>
-      <label class="field"><span>Your name (optional)</span>
-        <input class="input" id="w-name" maxlength="64" placeholder="Only shown to people you message" autocomplete="off"></label>
-      <button class="btn primary block" id="w-create">Create identity</button>
-    </div>
+    <div class="card" id="w-create-card"></div>
     <div class="card">
       <h2>Link to an existing device</h2>
       <p>On a device already using Veil, open Settings → Link a new device. Then scan its QR or type its code here.</p>
@@ -440,28 +437,76 @@ function renderWelcome({ code = '' } = {}) {
 
   wireThemeToggles();
   wireInstall();
-  $('#w-create').onclick = async (e) => {
-    const btn = e.currentTarget;
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span>';
-    if (location.hash.startsWith('#link=')) history.replaceState(null, '', location.pathname);
-    try {
-      client = new VeilClient({ store, url: WS_URL, WebSocket });
-      await client.createAccount({ deviceName: deviceLabel(), profileName: $('#w-name').value.trim() });
-      startMain({ fresh: true });
-    } catch (err) {
-      client?.close();
-      toast(errText(err));
-      btn.disabled = false;
-      btn.textContent = 'Create identity';
-    }
-  };
+  paintCreateCard(invite ? { code: invite, checking: true } : {});
+  if (invite) checkWelcomeInvite(invite);
   $('#w-scan').onclick = async () => {
     const text = await scanQR('Scan the QR shown under “Link a new device”');
     if (text) { $('#w-code').value = text; $('#w-link').click(); }
   };
   $('#w-link').onclick = () => joinFlow($('#w-code').value);
   $('#w-code').onkeydown = (e) => { if (e.key === 'Enter') $('#w-link').click(); };
+}
+
+// The “create identity” card: invite-only. Without a valid invite you can only link an existing identity.
+function paintCreateCard({ code = '', checking = false, valid = false, error = '' } = {}) {
+  const card = $('#w-create-card');
+  if (!card) return;
+  if (valid) {
+    card.innerHTML = `
+      <h2>You’re invited</h2>
+      <p>Create your identity. You get a random ID, with no phone number or email, and share it or its QR code with people you want to talk to.</p>
+      <label class="field"><span>Your name (optional)</span>
+        <input class="input" id="w-name" maxlength="64" placeholder="Only shown to people you message" autocomplete="off"></label>
+      <button class="btn primary block" id="w-create">Create identity</button>`;
+    $('#w-create').onclick = async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>';
+      try {
+        client = new VeilClient({ store, url: WS_URL, WebSocket });
+        await client.createAccount({ deviceName: deviceLabel(), profileName: $('#w-name').value.trim(), invite: code });
+        history.replaceState(null, '', location.pathname + (location.hash.startsWith('#c=') ? location.hash : ''));
+        startMain({ fresh: true });
+      } catch (err) {
+        client?.close();
+        if (/invite/i.test(err.message)) return paintCreateCard({ error: err.message });
+        toast(errText(err));
+        btn.disabled = false;
+        btn.textContent = 'Create identity';
+      }
+    };
+    setTimeout(() => $('#w-name')?.focus(), 50);
+    return;
+  }
+  card.innerHTML = `
+    <h2>New to Veil?</h2>
+    <p>Veil is invite-only. Open the invite link you were sent, or paste it here.</p>
+    <div class="row" style="margin-bottom:${error ? 8 : 12}px">
+      <input class="input grow mono" id="w-invite" placeholder="Invite link or code" value="${esc(code)}" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <button class="btn" id="w-inv-scan" aria-label="Scan invite QR">${icon('camera')}</button>
+    </div>
+    ${error ? `<p style="color:var(--danger);font-size:14px;margin:0 0 12px">${esc(error)}</p>` : ''}
+    <button class="btn primary block" id="w-inv-go" ${checking ? 'disabled' : ''}>${checking ? '<span class="spinner"></span>' : 'Continue'}</button>`;
+  const go = () => {
+    const c = VeilClient.parseInvite($('#w-invite').value);
+    if (!c) return paintCreateCard({ code: $('#w-invite').value, error: 'That doesn’t look like an invite link.' });
+    paintCreateCard({ code: c, checking: true });
+    checkWelcomeInvite(c);
+  };
+  $('#w-inv-go').onclick = go;
+  $('#w-invite').onkeydown = (e) => { if (e.key === 'Enter') go(); };
+  $('#w-inv-scan').onclick = async () => {
+    const t = await scanQR('Scan the invite QR code');
+    if (t) { $('#w-invite').value = t; go(); }
+  };
+}
+async function checkWelcomeInvite(code) {
+  try {
+    const r = await new VeilClient({ store, url: WS_URL, WebSocket }).checkInvite(code);
+    paintCreateCard(r.ok ? { code, valid: true } : { code, error: r.reason || 'This invite isn’t valid.' });
+  } catch {
+    paintCreateCard({ code, error: 'Couldn’t reach the server. Check your connection and try again.' });
+  }
 }
 
 async function joinFlow(code) {
@@ -504,9 +549,8 @@ function startMain({ fresh = false, linked = false } = {}) {
       <div class="search"><input class="input" id="search" placeholder="Search" autocomplete="off"></div>
       <div class="chat-list" id="chat-list"></div>
       <div id="nudge"></div>
-      <div class="side-foot">
+      <div class="side-foot ${canInstall() ? '' : 'hidden'}">
         ${installButton('btn block')}
-        <button class="id-chip" id="b-myid">${icon('qr')}<div><div class="lbl">Your ID</div><div class="mono">${formatId(client.me.account)}</div></div></button>
       </div>
     </aside>
     <main class="main" id="main"></main>
@@ -514,7 +558,6 @@ function startMain({ fresh = false, linked = false } = {}) {
   wireThemeToggles();
   $('#b-new').onclick = () => newChatModal();
   $('#b-settings').onclick = () => settingsModal();
-  $('#b-myid').onclick = () => myIdModal();
   $('#search').oninput = (e) => { ui.search = e.target.value.toLowerCase(); renderSide(); };
   window.onpopstate = () => { if (ui.chatId) closeChat(false); };
   const main = $('#main');
@@ -805,6 +848,7 @@ function handleHash() {
   if (h.startsWith('#c=')) newChatModal({ contact: h });
   else if (h.startsWith('#open=')) { const id = decodeURIComponent(h.slice(6)); client.chat(id).then((c) => c && openChat(id)); }
   else if (h === '#new') newChatModal();
+  else if (h.startsWith('#invite=')) toast('You already have an identity on this device. Invites are for new people.');
   else if (h.startsWith('#link=')) toast('This device is already set up. Open the link on the new device.');
 }
 
@@ -839,6 +883,8 @@ async function newChatModal({ contact = '', tab = 'contact' } = {}) {
     body: `
       <div class="tabs"><button data-tab="contact">${icon('userPlus', 'i" style="width:16px;height:16px;vertical-align:-3px')} Add contact</button><button data-tab="group">${icon('users', 'i" style="width:16px;height:16px;vertical-align:-3px')} New group</button></div>
       <div data-pane="contact">
+        <div class="my-id-row">${icon('qr')}<div class="grow"><div class="muted small">Your ID — share it so people can add you</div><div class="mono">${formatId(client.me.account)}</div></div>
+          <button class="btn sm" id="nc-myid">Show QR</button></div>
         <label class="field"><span>Their ID or contact link</span>
           <div class="row"><input class="input grow mono" id="nc-id" placeholder="xxxx-xxxx-xxxx-xxxx" value="${esc(contact)}" autocomplete="off" autocapitalize="off" spellcheck="false">
           <button class="btn" id="nc-scan" aria-label="Scan QR">${icon('camera')}</button></div></label>
@@ -861,6 +907,7 @@ async function newChatModal({ contact = '', tab = 'contact' } = {}) {
   };
   $$('[data-tab]', m.el).forEach((b) => (b.onclick = () => setTab(b.dataset.tab)));
   setTab(tab);
+  $('#nc-myid', m.el).onclick = () => myIdModal();
   $$('[data-open]', m.el).forEach((b) => (b.onclick = () => { m.close(); openChat(`dm:${b.dataset.open}`); }));
   const add = async () => {
     const btn = $('#nc-add', m.el);
@@ -1124,8 +1171,9 @@ async function boot() {
   try { me = await client.load(); } catch (e) { $('#app').innerHTML = `<p style="padding:24px">Storage unavailable: ${esc(e.message)}. Private browsing may block IndexedDB.</p>`; return; }
   if (!me) {
     const m = location.hash.match(/^#link=([0-9a-z]{24})/);
-    renderWelcome({ code: m ? m[1].match(/.{4}/g).join('-') : '' });
-    if (location.hash.startsWith('#c=')) toast('Create an identity first — the contact will be added right after.');
+    const inv = location.hash.match(/^#invite=([0-9a-z]{24})/);
+    renderWelcome({ code: m ? m[1].match(/.{4}/g).join('-') : '', invite: inv ? inv[1] : '' });
+    if (location.hash.startsWith('#c=')) toast('You need an invite to create an identity. Then open the contact link again.');
     return;
   }
   startMain();

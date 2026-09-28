@@ -2,6 +2,7 @@
 
 End-to-end encrypted messenger with **no username, phone number or email**.
 
+- **Invite-only:** creating an identity needs an invite link from the admin page (`/admin`). Linking more devices to an existing identity doesn't.
 - Your account is a random ID like `1v8y-k165-js58-d52g`.
 - Add people by typing their ID or scanning their QR code. The QR also carries their key, so scanning it verifies them.
 - Add devices with a 24-character code or a QR from a device you're already signed in on, approved on that device.
@@ -46,6 +47,16 @@ location / {
 
 In Nginx Proxy Manager / Nginx UI, enable "WebSockets support" on the proxy host and raise the upload limit (`client_max_body_size 51m`). Nginx's default of 1 MB would block larger images.
 
+## Admin and invites
+
+Open **`/admin`** (e.g. `https://veil.example.com/admin`) and sign in with the admin token.
+
+- The token is generated on first start, printed in the log, and saved as `admin-token` next to the database: `docker exec veil cat /data/admin-token`, or `docker logs veil`. Set `ADMIN_TOKEN` to choose your own.
+- **Create invites** with a label (only you see it), a use limit (once, 5, 25, unlimited) and an expiry (24 h, 7 d, 30 d, never). You get a link and a QR code. Opening the link shows "You're invited" and lets the person create an identity.
+- Revoke an invite at any time. Identities already created with it are not affected.
+- The identity list shows each random ID, which invite it came from, device count and last activity. **Delete** removes the identity and signs all its devices out.
+- Sign-in is rate-limited (10 attempts / 15 min per IP). Behind a reverse proxy, set `TRUST_PROXY=1` so the real client IP is used.
+
 ## Notifications and installing
 
 - **Install:** Chrome/Edge/Android show an **Install app** button in the sidebar. On iPhone/iPad: Safari → Share → *Add to Home Screen*.
@@ -55,8 +66,8 @@ In Nginx Proxy Manager / Nginx UI, enable "WebSockets support" on the proxy host
 
 ## Using it
 
-1. **Create identity** and optionally set a name. The name is only sent, encrypted, to people you message.
-2. Share **Your ID** (bottom left), or show its QR.
+1. Open your **invite link**, then **Create identity** and optionally set a name. The name is only sent, encrypted, to people you message.
+2. Share your ID: it's shown under **+ → Add contact** and in **Settings**, with a QR code.
 3. **+ → Add contact**: paste an ID or contact link, or scan a QR. Messages from people who haven't been added show up as **requests** (accept or block).
 4. **+ → New group**: pick contacts. Admins can rename, add and remove. Removing someone rotates everyone's group keys.
 5. **Settings → Link a new device**: on the new device choose *Link to an existing device*, then scan or type the code, then approve on the old device. History, contacts and groups come along.

@@ -43,6 +43,24 @@ export function openDb(path) {
     CREATE INDEX IF NOT EXISTS mailbox_dest ON mailbox(account, device, seq);
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS invites (
+      code TEXT PRIMARY KEY,
+      label TEXT NOT NULL DEFAULT '',
+      created INTEGER NOT NULL,
+      expires INTEGER,            -- null = never
+      max_uses INTEGER,           -- null = unlimited
+      uses INTEGER NOT NULL DEFAULT 0,
+      revoked INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS invite_uses (
+      code TEXT NOT NULL,
+      account TEXT NOT NULL,
+      ts INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS invite_uses_account ON invite_uses(account);
+  `);
+
   // migrations
   const cols = db.prepare('PRAGMA table_info(devices)').all().map((c) => c.name);
   if (!cols.includes('push_sub')) db.exec('ALTER TABLE devices ADD COLUMN push_sub TEXT');
@@ -56,6 +74,20 @@ export function openDb(path) {
     touchDevice: db.prepare('UPDATE devices SET last_seen = ? WHERE account = ? AND id = ?'),
     setPush: db.prepare('UPDATE devices SET push_sub = ? WHERE account = ? AND id = ?'),
     getPush: db.prepare('SELECT push_sub FROM devices WHERE account = ? AND id = ?'),
+    getInvite: db.prepare('SELECT * FROM invites WHERE code = ?'),
+    insertInvite: db.prepare('INSERT INTO invites (code, label, created, expires, max_uses) VALUES (?, ?, ?, ?, ?)'),
+    useInvite: db.prepare('UPDATE invites SET uses = uses + 1 WHERE code = ? AND revoked = 0 AND (expires IS NULL OR expires > ?) AND (max_uses IS NULL OR uses < max_uses)'),
+    recordInviteUse: db.prepare('INSERT INTO invite_uses (code, account, ts) VALUES (?, ?, ?)'),
+    listInvites: db.prepare('SELECT * FROM invites ORDER BY created DESC'),
+    revokeInvite: db.prepare('UPDATE invites SET revoked = 1 WHERE code = ?'),
+    deleteInvite: db.prepare('DELETE FROM invites WHERE code = ?'),
+    listAccounts: db.prepare(`SELECT a.id, a.created, COUNT(d.id) AS devices, MAX(d.last_seen) AS last_seen,
+        (SELECT i.label FROM invite_uses u LEFT JOIN invites i ON i.code = u.code WHERE u.account = a.id LIMIT 1) AS invite_label,
+        (SELECT u.code FROM invite_uses u WHERE u.account = a.id LIMIT 1) AS invite_code
+      FROM accounts a LEFT JOIN devices d ON d.account = a.id GROUP BY a.id ORDER BY a.created DESC LIMIT 1000`),
+    deleteAccount: db.prepare('DELETE FROM accounts WHERE id = ?'),
+    stats: db.prepare(`SELECT (SELECT COUNT(*) FROM accounts) AS accounts, (SELECT COUNT(*) FROM devices) AS devices,
+      (SELECT COUNT(*) FROM mailbox) AS queued, (SELECT COUNT(*) FROM devices WHERE push_sub IS NOT NULL) AS push`),
     deleteDevice: db.prepare('DELETE FROM devices WHERE account = ? AND id = ?'),
     setDeviceName: db.prepare('UPDATE devices SET name_box = ? WHERE account = ? AND id = ?'),
     upsertSpk: db.prepare('INSERT INTO spks (account, device, id, pub, sig) VALUES (?, ?, ?, ?, ?) ON CONFLICT(account, device) DO UPDATE SET id = excluded.id, pub = excluded.pub, sig = excluded.sig'),

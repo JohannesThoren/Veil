@@ -219,7 +219,21 @@ export class VeilClient {
   }
 
   // ---------------- account ----------------
-  async createAccount({ deviceName = 'Device', profileName = '' } = {}) {
+  /** Accepts an invite URL (…#invite=<code>) or a bare 24-char code. */
+  static parseInvite(input) {
+    const m = String(input ?? '').match(/[#?&]invite=([0-9a-z]{24})/);
+    const c = m ? m[1] : normalizeCode(String(input ?? ''));
+    return c.length === 24 ? c : null;
+  }
+  /** { ok: true } or { ok: false, reason } — without creating anything. */
+  async checkInvite(code) {
+    const res = await fetch(`${this.httpBase}/api/invite?code=${encodeURIComponent(code)}`);
+    return res.json();
+  }
+
+  async createAccount({ deviceName = 'Device', profileName = '', invite } = {}) {
+    const inviteCode = VeilClient.parseInvite(invite);
+    if (!inviteCode) throw new Error('An invite is required to create an identity');
     if (!this.ws || this.ws.readyState !== 1) await this.connect();
     const identity = Ed.gen();
     const sign = Ed.gen();
@@ -238,10 +252,12 @@ export class VeilClient {
         await this.rpc('register', {
           account, identity: this.me.identity.pub,
           sig: enc(Ed.sign(identity.priv, stmt.register(account, this.me.identity.pub))),
-          device: this._deviceBlock(this.me.deviceId, this.me.sign, deviceName), spk, opks,
+          device: this._deviceBlock(this.me.deviceId, this.me.sign, deviceName), spk, opks, invite: inviteCode,
         });
       } catch (e) {
         if (e.message === 'account id taken') continue;
+        await this.store.clear();
+        this.me = null;
         throw e;
       }
       this.me.registered = true;

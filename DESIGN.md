@@ -35,6 +35,12 @@ The server binds `account id → identity key` at registration (signed by IK). T
 - **Bare ID** = trust on first use. The UI shows "Not verified" until you compare safety numbers or scan their QR.
 - A pinned key can never be replaced silently. A mismatch blocks sending with a safety warning. An account ID can't be re-registered, so a change can only mean the server is misbehaving.
 
+### Registration is invite-only
+
+`register` must carry an invite code: 24 chars, 120 bits, made on the admin page. The relay consumes it atomically in the same transaction that creates the account (`UPDATE … WHERE uses < max_uses AND not expired AND not revoked`), so a single-use invite can't be raced into two accounts. It records which invite each account used. `addDevice` (linking) needs no invite: it already requires a device certificate signed by the account's identity key, which only an existing identity can produce.
+
+The admin API (`/admin/api/*`) uses a token → HttpOnly, `SameSite=Strict` session cookie (12 h). Writes must be `application/json`, which a cross-site form can't send. Login is rate-limited per IP. The admin sees only what the relay already stores: random IDs, timestamps, device counts, invite labels.
+
 ## 3. 1:1 messages — X3DH + Double Ratchet
 
 Sessions are per **(remote account, remote device)** pair.
@@ -109,6 +115,7 @@ What push reveals beyond the relay: the push service sees that *something* arriv
 | Table | Contents |
 |---|---|
 | `accounts` | id, identity public key |
+| `invites` / `invite_uses` | invite codes, label, limits, which account used which invite |
 | `devices` | device id, signing pub key, cert, device name **encrypted with a key derived from IK** (only your own devices can read it), push subscription endpoint |
 | `spks` / `opks` | public prekeys |
 | `mailbox` | per-device queue of `{from account/device, kind, ciphertext, ts}`. Deleted on ack, expired after 30 days |
@@ -142,7 +149,7 @@ test/                crypto unit tests + multi-client end-to-end tests over real
 3. **At-rest encryption** of IndexedDB with a passphrase / WebAuthn PRF key.
 4. **Other attachments** (files, video, voice notes) reuse the image pipeline. Very large files would need chunked streaming encryption instead of one in-memory buffer. Per-account storage quotas on the relay.
 5. **MLS** for large groups. Multi-admin conflict resolution (today concurrent admin edits are last-valid-version-wins).
-6. **Abuse controls**: per-account send quotas, proof-of-work or invite tokens for registration. Today there is only a per-connection rate limit.
+6. **Abuse controls**: registration is invite-only, and there's a per-connection rate limit. Still missing: per-account send and storage quotas, and letting members issue their own (limited) invites.
 7. **Backups / recovery**: optional encrypted backup keyed by a recovery code. Without it, losing all devices loses the account (by design).
 8. Read receipts, typing indicators, disappearing messages, message editing and deletion.
 9. Native shells (Tauri/Capacitor) wrapping the same core for background delivery.

@@ -7,7 +7,31 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import webpush from 'web-push';
 import { openDb } from './db.js';
+import crypto from 'node:crypto';
+import { customAlphabet } from 'nanoid';
 import { Ed, dec, enc, rand, stmt, isAccountId, ALPHABET } from '../shared/crypto.js';
+
+const newInviteCode = customAlphabet(ALPHABET, 24); // 120 bits
+const isInviteCode = (s) => typeof s === 'string' && s.length === 24 && [...s].every((c) => ALPHABET.includes(c));
+function inviteStatus(inv, now = Date.now()) {
+  if (!inv) return 'invalid';
+  if (inv.revoked) return 'revoked';
+  if (inv.expires != null && inv.expires <= now) return 'expired';
+  if (inv.max_uses != null && inv.uses >= inv.max_uses) return 'used';
+  return 'active';
+}
+const INVITE_ERRORS = { invalid: 'Invite not found', revoked: 'This invite was revoked', expired: 'This invite has expired', used: 'This invite has already been used' };
+
+function loadAdminToken(dataDir, log) {
+  if (process.env.ADMIN_TOKEN) return process.env.ADMIN_TOKEN;
+  const file = path.join(dataDir, 'admin-token');
+  try { return fs.readFileSync(file, 'utf8').trim(); } catch { /* generate */ }
+  const token = enc(rand(24));
+  fs.writeFileSync(file, token + '\n', { mode: 0o600 });
+  log(`admin token created — sign in at /admin with: ${token}  (stored in ${file})`);
+  return token;
+}
+const sha = (s) => crypto.createHash('sha256').update(String(s)).digest();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -56,12 +80,14 @@ const isLinkId = (s) => typeof s === 'string' && s.length === 8 && [...s].every(
 class ClientError extends Error {}
 const must = (cond, msg) => { if (!cond) throw new ClientError(msg); };
 
-export function startServer({ port = 8080, dbPath = 'veil.db', staticDir = path.join(__dirname, '../web/dist'), log = console.log, pushSender } = {}) {
+export function startServer({ port = 8080, dbPath = 'veil.db', staticDir = path.join(__dirname, '../web/dist'), log = console.log, pushSender, adminToken } = {}) {
   const { q, tx } = openDb(dbPath);
   const blobDir = process.env.BLOB_DIR ?? path.join(path.dirname(path.resolve(dbPath)), 'blobs');
   fs.mkdirSync(blobDir, { recursive: true });
   const uploads = new Map();   // blobId -> { token, size, expires }
   const blobPath = (id) => path.join(blobDir, id);
+
+  const ADMIN_TOKEN = adminToken ?? loadAdminToken(path.dirname(path.resolve(dbPath)), log);
 
   // ---------- push ----------
   const vapid = loadVapid(path.dirname(path.resolve(dbPath)));
@@ -120,8 +146,10 @@ export function startServer({ port = 8080, dbPath = 'veil.db', staticDir = path.
     }
   }
 
-  const registerTx = tx((a, identity, device, spk, opks) => {
+  const registerTx = tx((a, identity, device, spk, opks, invite) => {
     const now = Date.now();
+    if (q.useInvite.run(invite, now).changes !== 1) throw new ClientError(INVITE_ERRORS[inviteStatus(q.getInvite.get(invite))] ?? 'Invite not valid');
+    q.recordInviteUse.run(invite, a, now);
     q.insertAccount.run(a, identity, now);
     q.insertDevice.run(a, device.id, device.signPub, device.cert, device.nameBox ?? null, now, now);
     storePrekeys(a, device.id, identity, spk, opks);
@@ -159,14 +187,17 @@ export function startServer({ port = 8080, dbPath = 'veil.db', staticDir = path.
 
   const handlers = {
     // --- account & device lifecycle ---
-    register(conn, { account, identity, sig, device, spk, opks }) {
+    register(conn, { account, identity, sig, device, spk, opks, invite }) {
       must(!conn.account, 'already authenticated');
+      must(isInviteCode(invite), 'An invite is required to create an identity');
+      const st = inviteStatus(q.getInvite.get(invite));
+      must(st === 'active', INVITE_ERRORS[st]);
       must(isAccountId(account), 'bad account id');
       must(isB64(identity), 'bad identity');
       must(Ed.verify(dec(sig ?? ''), stmt.register(account, identity), dec(identity)), 'registration signature invalid');
       checkDeviceBlock(account, identity, device);
       must(!q.getAccount.get(account), 'account id taken');
-      registerTx(account, identity, device, spk, opks);
+      registerTx(account, identity, device, spk, opks, invite);
       log(`register ${account.slice(0, 4)}…`);
       return authenticated(conn, account, device.id);
     },
@@ -352,6 +383,9 @@ export function startServer({ port = 8080, dbPath = 'veil.db', staticDir = path.
     if (url.pathname === '/healthz') { res.end('ok'); return; }
     const bm = url.pathname.match(/^\/blob\/([A-Za-z0-9_-]{22})$/);
     if (bm) { handleBlob(req, res, bm[1]); return; }
+    if (url.pathname === '/api/invite') { inviteCheck(req, res, url); return; }
+    if (url.pathname.startsWith('/admin/api/')) { adminApi(req, res, url).catch((e) => { log('admin error', e); json(res, 500, { error: 'server error' }); }); return; }
+    if (url.pathname === '/admin' || url.pathname === '/admin/') url.pathname = '/admin.html';
     let p = path.normalize(decodeURIComponent(url.pathname)).replace(/^(\.\.[/\\])+/, '');
     let file = path.join(staticDir, p);
     if (!file.startsWith(staticDir)) { res.writeHead(403).end(); return; }
@@ -417,6 +451,103 @@ export function startServer({ port = 8080, dbPath = 'veil.db', staticDir = path.
     });
   }
 
+  // ---------- invites & admin ----------
+  const json = (res, status, body, headers = {}) => {
+    res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...headers });
+    res.end(JSON.stringify(body));
+  };
+  const clientIp = (req) => (process.env.TRUST_PROXY ? String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim() : '') || req.socket.remoteAddress;
+  const buckets = new Map(); // "kind|ip" -> { n, reset }
+  function limited(kind, req, max, windowMs) {
+    const k = `${kind}|${clientIp(req)}`;
+    const now = Date.now();
+    let b = buckets.get(k);
+    if (!b || b.reset < now) { b = { n: 0, reset: now + windowMs }; buckets.set(k, b); }
+    return ++b.n > max;
+  }
+  function readJson(req, max = 16 * 1024) {
+    return new Promise((resolve, reject) => {
+      let data = '';
+      req.on('data', (c) => { data += c; if (data.length > max) { reject(new ClientError('too large')); req.destroy(); } });
+      req.on('end', () => { try { resolve(data ? JSON.parse(data) : {}); } catch { reject(new ClientError('bad json')); } });
+      req.on('error', reject);
+    });
+  }
+
+  function inviteCheck(req, res, url) {
+    if (limited('invite', req, 60, 60_000)) return json(res, 429, { ok: false, reason: 'Too many attempts, try again in a minute' });
+    const code = url.searchParams.get('code') ?? '';
+    const st = isInviteCode(code) ? inviteStatus(q.getInvite.get(code)) : 'invalid';
+    json(res, 200, st === 'active' ? { ok: true } : { ok: false, reason: INVITE_ERRORS[st] });
+  }
+
+  const sessions = new Map(); // session id -> expires
+  const SESSION_MS = 12 * 3600 * 1000;
+  const cookieOf = (req) => (String(req.headers.cookie ?? '').match(/(?:^|;\s*)veil_admin=([A-Za-z0-9_-]+)/) ?? [])[1];
+  const isAdmin = (req) => { const s = cookieOf(req); const exp = s && sessions.get(s); return !!exp && exp > Date.now(); };
+  const inviteView = (i) => ({
+    code: i.code, label: i.label, created: i.created, expires: i.expires, maxUses: i.max_uses, uses: i.uses, status: inviteStatus(i),
+  });
+
+  async function adminApi(req, res, url) {
+    const route = url.pathname.slice('/admin/api/'.length);
+    const mutating = req.method !== 'GET';
+    // CSRF: cookies are SameSite=Strict, and every write must be a JSON request (not sendable by a plain form).
+    if (mutating && !String(req.headers['content-type'] ?? '').startsWith('application/json')) return json(res, 415, { error: 'JSON required' });
+
+    if (route === 'login' && req.method === 'POST') {
+      if (limited('login', req, 10, 15 * 60_000)) return json(res, 429, { error: 'Too many attempts. Wait 15 minutes.' });
+      const { token } = await readJson(req).catch(() => ({}));
+      if (typeof token !== 'string' || !crypto.timingSafeEqual(sha(token), sha(ADMIN_TOKEN))) return json(res, 401, { error: 'Wrong admin token' });
+      const sid = enc(rand(32));
+      sessions.set(sid, Date.now() + SESSION_MS);
+      const secure = req.headers['x-forwarded-proto'] === 'https' || req.socket.encrypted ? '; Secure' : '';
+      return json(res, 200, { ok: true }, { 'Set-Cookie': `veil_admin=${sid}; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=${SESSION_MS / 1000}${secure}` });
+    }
+    if (route === 'logout' && req.method === 'POST') {
+      sessions.delete(cookieOf(req));
+      return json(res, 200, { ok: true }, { 'Set-Cookie': 'veil_admin=; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=0' });
+    }
+    if (!isAdmin(req)) return json(res, 401, { error: 'Not signed in' });
+
+    if (route === 'overview' && req.method === 'GET') {
+      let blobs = 0, blobBytes = 0;
+      for (const n of fs.readdirSync(blobDir)) {
+        if (n.endsWith('.part')) continue;
+        try { blobBytes += fs.statSync(path.join(blobDir, n)).size; blobs++; } catch { /* raced with janitor */ }
+      }
+      const invites = q.listInvites.all().map(inviteView);
+      return json(res, 200, {
+        stats: { ...q.stats.get(), blobs, blobBytes, online: online.size, activeInvites: invites.filter((i) => i.status === 'active').length },
+        invites,
+        accounts: q.listAccounts.all().map((a) => ({ id: a.id, created: a.created, devices: a.devices, lastSeen: a.last_seen, invite: a.invite_code ? { code: a.invite_code, label: a.invite_label ?? '' } : null })),
+      });
+    }
+    if (route === 'invites' && req.method === 'POST') {
+      const { label = '', maxUses = 1, expiresInHours = 168 } = await readJson(req);
+      if (typeof label !== 'string' || label.length > 80) return json(res, 400, { error: 'Label too long' });
+      if (maxUses !== null && !(Number.isInteger(maxUses) && maxUses >= 1 && maxUses <= 10000)) return json(res, 400, { error: 'Bad max uses' });
+      if (expiresInHours !== null && !(typeof expiresInHours === 'number' && expiresInHours > 0 && expiresInHours <= 24 * 365)) return json(res, 400, { error: 'Bad expiry' });
+      const code = newInviteCode();
+      const now = Date.now();
+      q.insertInvite.run(code, label.trim(), now, expiresInHours === null ? null : Math.round(now + expiresInHours * 3600_000), maxUses);
+      log(`admin: invite created${label ? ` (${label})` : ''}`);
+      return json(res, 201, { invite: inviteView(q.getInvite.get(code)) });
+    }
+    let m = route.match(/^invites\/([0-9a-z]{24})(\/revoke)?$/);
+    if (m && req.method === 'POST' && m[2]) { q.revokeInvite.run(m[1]); return json(res, 200, { ok: true }); }
+    if (m && req.method === 'DELETE' && !m[2]) { q.deleteInvite.run(m[1]); return json(res, 200, { ok: true }); }
+    m = route.match(/^accounts\/([0-9a-z]{16})$/);
+    if (m && req.method === 'DELETE') {
+      const a = m[1];
+      for (const [k, conns] of online) if (k.startsWith(a + ':')) for (const c of conns) { c.send({ t: 'removed' }); c.close(); }
+      q.deleteAccount.run(a);
+      log(`admin: account ${a.slice(0, 4)}… deleted`);
+      return json(res, 200, { ok: true });
+    }
+    return json(res, 404, { error: 'not found' });
+  }
+
   // ---------- WebSocket RPC ----------
   const wss = new WebSocketServer({ server, path: '/ws', maxPayload: LIMITS.frame });
   wss.on('connection', (ws) => {
@@ -472,6 +603,8 @@ export function startServer({ port = 8080, dbPath = 'veil.db', staticDir = path.
     for (const [id, l] of links) if (l.expires < Date.now()) links.delete(id);
     for (const [id, u] of uploads) if (u.expires < Date.now()) uploads.delete(id);
     for (const [k, t] of lastPush) if (Date.now() - t > 60_000) lastPush.delete(k);
+    for (const [k, b] of buckets) if (b.reset < Date.now()) buckets.delete(k);
+    for (const [k, exp] of sessions) if (exp < Date.now()) sessions.delete(k);
     fs.readdir(blobDir, (err, names) => {
       if (err) return;
       for (const name of names) {

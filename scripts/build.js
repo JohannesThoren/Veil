@@ -10,18 +10,18 @@ fs.rmSync(out, { recursive: true, force: true });
 fs.mkdirSync(out, { recursive: true });
 
 await build({
-  entryPoints: [path.join(root, 'web/app.js')],
+  entryPoints: [path.join(root, 'web/app.js'), path.join(root, 'web/admin.js')],
   bundle: true,
   format: 'esm',
   platform: 'browser',
   target: ['es2022', 'safari16'],
   minify: true,
   sourcemap: true,
-  outfile: path.join(out, 'app.js'),
+  outdir: out,
   logLevel: 'info',
 });
 
-for (const f of ['index.html', 'app.css', 'theme.js', 'sw.js', 'manifest.webmanifest', 'icon.svg', 'icon-maskable.svg']) {
+for (const f of ['index.html', 'admin.html', 'app.css', 'theme.js', 'sw.js', 'manifest.webmanifest', 'icon.svg', 'icon-maskable.svg']) {
   fs.copyFileSync(path.join(root, 'web', f), path.join(out, f));
 }
 fs.cpSync(path.join(root, 'web/icons'), path.join(out, 'icons'), { recursive: true });

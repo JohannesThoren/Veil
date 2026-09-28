@@ -13,13 +13,24 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'veil-'));
 const pushes = [];
 let pushFails = null;
 const srv = await startServer({
-  port: 0, dbPath: path.join(dir, 'test.db'), log: () => {},
+  port: 0, dbPath: path.join(dir, 'test.db'), log: () => {}, adminToken: 'test-admin-token',
   pushSender: async (sub, payload, opts) => {
     if (pushFails) throw Object.assign(new Error('gone'), { statusCode: pushFails });
     pushes.push({ sub, payload: JSON.parse(payload), opts });
   },
 });
 const url = `ws://localhost:${srv.port}/ws`;
+const base = `http://localhost:${srv.port}`;
+let adminCookie = null;
+async function admin(method, route, body, { contentType = 'application/json', cookie = adminCookie } = {}) {
+  const res = await fetch(`${base}/admin/api/${route}`, {
+    method, headers: { 'Content-Type': contentType, ...(cookie ? { Cookie: cookie } : {}) }, body: body ? JSON.stringify(body) : undefined,
+  });
+  const sc = res.headers.get('set-cookie');
+  if (sc && cookie === adminCookie) adminCookie = sc.split(';')[0];
+  return { status: res.status, body: await res.json().catch(() => null), cookieHeader: sc };
+}
+const newInvite = async (opts = {}) => (await admin('POST', 'invites', opts)).body.invite.code;
 const clients = [];
 const mk = () => { const c = new VeilClient({ store: new MemoryStore(), url, WebSocket }); clients.push(c); return c; };
 
@@ -37,10 +48,44 @@ const alice = mk(), bob = mk(), carol = mk();
 let alice2, bob2;
 
 try {
+  await t('admin: token login, session cookie, CSRF guard', async () => {
+    assert.equal((await admin('GET', 'overview')).status, 401);
+    assert.equal((await admin('POST', 'login', { token: 'nope' })).status, 401);
+    const ok = await admin('POST', 'login', { token: 'test-admin-token' });
+    assert.equal(ok.status, 200);
+    assert.match(ok.cookieHeader, /HttpOnly; SameSite=Strict; Path=\/admin/);
+    assert.equal((await admin('GET', 'overview')).status, 200);
+    assert.equal((await admin('POST', 'invites', {}, { contentType: 'application/x-www-form-urlencoded' })).status, 415, 'form posts refused');
+    assert.equal((await admin('GET', 'overview', null, { cookie: 'veil_admin=forged' })).status, 401);
+  });
+
+  await t('invites: required to register; single-use, expired and revoked ones refused', async () => {
+    const lone = mk();
+    await assert.rejects(lone.createAccount({ profileName: 'Nobody' }), /invite is required/);
+    await assert.rejects(lone.createAccount({ profileName: 'Nobody', invite: 'a'.repeat(24) }), /not found/);
+    const once = await newInvite({ label: 'single', maxUses: 1 });
+    assert.deepEqual(await lone.checkInvite(once), { ok: true });
+    const expired = await newInvite({ expiresInHours: 0.000001 });
+    await new Promise((r) => setTimeout(r, 20));
+    await assert.rejects(mk().createAccount({ invite: expired }), /expired/);
+    assert.equal((await lone.checkInvite(expired)).ok, false);
+    const revoked = await newInvite();
+    assert.equal((await admin('POST', `invites/${revoked}/revoke`, {})).status, 200);
+    await assert.rejects(mk().createAccount({ invite: revoked }), /revoked/);
+    await mk().createAccount({ invite: `https://veil.example/#invite=${once}` });
+    await assert.rejects(mk().createAccount({ invite: once }), /already been used/);
+    const ov = (await admin('GET', 'overview')).body;
+    const inv = ov.invites.find((i) => i.code === once);
+    assert.equal(inv.status, 'used');
+    assert.equal(inv.uses, 1);
+    assert.ok(ov.accounts.some((a) => a.invite?.label === 'single'));
+  });
+
   await t('create accounts (random 16-char IDs, no usernames)', async () => {
-    await alice.createAccount({ deviceName: 'Alice laptop', profileName: 'Alice' });
-    await bob.createAccount({ deviceName: 'Bob phone', profileName: 'Bob' });
-    await carol.createAccount({ deviceName: 'Carol', profileName: 'Carol' });
+    const invite = await newInvite({ label: 'friends', maxUses: 3, expiresInHours: null });
+    await alice.createAccount({ deviceName: 'Alice laptop', profileName: 'Alice', invite });
+    await bob.createAccount({ deviceName: 'Bob phone', profileName: 'Bob', invite });
+    await carol.createAccount({ deviceName: 'Carol', profileName: 'Carol', invite });
     assert.match(alice.me.account, /^[0-9a-z]{16}$/);
     assert.notEqual(alice.me.account, bob.me.account);
   });
@@ -284,6 +329,26 @@ try {
   await t('mute syncs to own devices', async () => {
     await alice.setMuted(gchat.id, true);
     await waitFor(async () => (await alice2.chat(gchat.id))?.muted === true, 'alice2 muted');
+  });
+
+  await t('admin: deleting an account wipes its devices and makes it unreachable', async () => {
+    const dave = mk();
+    await dave.createAccount({ profileName: 'Dave', invite: await newInvite({ label: 'dave' }) });
+    let removed = false;
+    dave.on('removed', () => { removed = true; });
+    const ov = (await admin('GET', 'overview')).body;
+    assert.ok(ov.stats.accounts >= 5);
+    assert.equal(ov.accounts.find((a) => a.id === dave.me.account).invite.label, 'dave');
+    assert.equal((await admin('DELETE', `accounts/${dave.me.account}`)).status, 200);
+    await waitFor(() => removed, 'dave wiped');
+    await assert.rejects(alice.addContact(dave.me.account), /No account/);
+  });
+
+  await t('linking a device never needs an invite', async () => {
+    const link = await carol.startLink({ onRequest: async () => true });
+    const carol2 = await VeilClient.joinLink({ store: new MemoryStore(), url, WebSocket, code: link.code, deviceName: 'Carol 2' });
+    clients.push(carol2);
+    assert.equal(carol2.me.account, carol.me.account);
   });
 
   await t('relay stores only ciphertext', async () => {

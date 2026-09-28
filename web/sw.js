@@ -3,7 +3,7 @@
 // Push payloads carry no message content — only which account/device sent something
 // (the relay knows that anyway). Names, group names and mute settings are looked up
 // here in the local IndexedDB, so the push service (Google/Apple/Mozilla) never sees them.
-const CACHE = 'veil-shell-v3';
+const CACHE = 'veil-shell-v4';
 const SHELL = ['/', '/app.js', '/app.css', '/theme.js', '/manifest.webmanifest', '/icon.svg',
   '/icons/icon-192.png', '/icons/icon-512.png', '/icons/badge-96.png'];
 
@@ -15,7 +15,8 @@ self.addEventListener('activate', (e) => {
 });
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
-  if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname === '/ws' || url.pathname.startsWith('/blob/')) return;
+  if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname === '/ws'
+    || url.pathname.startsWith('/blob/') || url.pathname.startsWith('/api/') || url.pathname.startsWith('/admin')) return;
   const key = e.request.mode === 'navigate' ? '/' : e.request;
   e.respondWith(
     fetch(e.request)
