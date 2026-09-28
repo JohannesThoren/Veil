@@ -1,0 +1,125 @@
+================================================================================
+                                LGJT LICENSE v1
+================================================================================
+
+Copyright (c) 2026 Johannes Thorén. All rights reserved.
+Project: Veil
+Contact: johannes@lgjt.xyz
+
+Licensed under the LGJT License v1.
+
+
+--------------------------------------------------------------------------------
+1. OWNERSHIP
+--------------------------------------------------------------------------------
+
+This repository and all of its contents are the exclusive property of the
+copyright holder. "Contents" includes, but is not limited to:
+
+  - source code and documentation;
+  - configuration files and database schemas;
+  - integration logic, including request/response formats and any
+    reverse-engineered details of third-party services;
+  - any associated data and assets.
+
+
+--------------------------------------------------------------------------------
+2. PERMITTED USE
+--------------------------------------------------------------------------------
+
+Permission is granted, without asking, ONLY to an individual acting in a
+personal, non-commercial capacity, to:
+
+  a) download and keep a copy of this repository;
+  b) read, study, and analyze the code;
+  c) run or test it locally, for their own private, non-commercial purposes.
+
+
+--------------------------------------------------------------------------------
+3. RESTRICTIONS
+--------------------------------------------------------------------------------
+
+Beyond Section 2, NO PERMISSION IS GRANTED to any person or entity to use,
+copy, modify, merge, publish, distribute, sublicense, sell, host, deploy, or
+create derivative works from any part of this repository, for any purpose,
+commercial or non-commercial, EXCEPT with the copyright holder's prior
+explicit written permission for that specific use.
+
+Without limitation, you may NOT, unless you have first asked for and received
+permission:
+
+  a) use this software, or any part of it, for any commercial purpose, or on
+     behalf of a company, business, or other organization, even if the use
+     would otherwise be non-commercial;
+
+  b) run, host, or deploy this software, or any modified version of it, so
+     that it is available to anyone other than yourself;
+
+  c) reuse the integration logic, request/response formats, or any
+     reverse-engineered details against the same or similar third-party
+     services, outside the personal use permitted in Section 2;
+
+  d) incorporate any part of this codebase into another project, whether
+     open source or proprietary;
+
+  e) redistribute, publish, or sell this repository or any portion of it,
+     in original or modified form;
+
+  f) use the name "Johannes Thorén", "LGJT", or the project's name to endorse
+     or promote any product or work derived from this software.
+
+
+--------------------------------------------------------------------------------
+4. ACCESS IS NOT PERMISSION
+--------------------------------------------------------------------------------
+
+Merely having access to this repository (for example, because it is
+technically public, or because it was shared with you for review) does NOT
+constitute permission to use it beyond the terms of this license.
+
+
+--------------------------------------------------------------------------------
+5. NOTICE
+--------------------------------------------------------------------------------
+
+The copyright and license notice above must remain intact and unmodified in
+every copy of this software, including modified versions. It may not be
+removed, altered, or attributed to anyone else.
+
+
+--------------------------------------------------------------------------------
+6. MODIFICATIONS
+--------------------------------------------------------------------------------
+
+If you modify this software, in any way and under any permission granted
+above, you must publish the complete source code of your modified version,
+publicly and free of charge, under this same license.
+
+This applies even if you never distribute, host, or share the modified
+software with anyone. Making changes alone is enough to trigger this
+requirement. You may not keep a modified version private.
+
+
+--------------------------------------------------------------------------------
+7. REQUESTING PERMISSION
+--------------------------------------------------------------------------------
+
+To request permission for anything not covered above, contact the copyright
+holder directly. Permission, if granted, will be provided separately and in
+writing, and may be limited to a specific use, duration, or party.
+
+
+--------------------------------------------------------------------------------
+8. DISCLAIMER OF WARRANTY AND LIABILITY
+--------------------------------------------------------------------------------
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
+
+IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES, OR
+OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE,
+ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE, EVEN IF PERMISSION TO USE IT WAS GRANTED.
+
+================================================================================

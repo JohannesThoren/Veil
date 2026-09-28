@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Johannes Thorén. All rights reserved.
+// Licensed under the LGJT License v1. See LICENSE in the project root.
 // Veil relay: stores public prekeys, queues opaque ciphertext per device, relays device-link handshakes.
 // It never sees plaintext, contact lists, group membership or names.
 import http from 'node:http';

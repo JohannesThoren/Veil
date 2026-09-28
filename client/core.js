@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Johannes Thorén. All rights reserved.
+// Licensed under the LGJT License v1. See LICENSE in the project root.
 // Veil client core: account, sessions, fan-out, groups, device linking.
 // UI-agnostic; runs in the browser (IdbStore + WebSocket) and in Node (MemoryStore + ws) for tests.
 import {

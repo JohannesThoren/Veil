@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Johannes Thorén. All rights reserved.
+// Licensed under the LGJT License v1. See LICENSE in the project root.
 // X3DH key agreement (Signal spec), using the account's Ed25519 identity key
 // converted to X25519 for the DH steps.
 import { X, Ed, kdf, concat, enc, dec, stmt } from './crypto.js';

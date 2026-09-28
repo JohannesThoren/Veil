@@ -25,5 +25,7 @@
     "esbuild": "^0.28.2",
     "jsqr": "^1.4.0",
     "qrcode": "^1.5.4"
-  }
+  },
+  "license": "SEE LICENSE IN LICENSE",
+  "author": "Johannes Thorén"
 }

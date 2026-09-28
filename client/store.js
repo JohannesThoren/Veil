@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Johannes Thorén. All rights reserved.
+// Licensed under the LGJT License v1. See LICENSE in the project root.
 // Key-value storage used by the client core. Values must be JSON-serialisable.
 // entries(prefix) returns [key, value] pairs sorted by key.
 

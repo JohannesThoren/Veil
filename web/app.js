@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Johannes Thorén. All rights reserved.
+// Licensed under the LGJT License v1. See LICENSE in the project root.
+
 import QRCode from 'qrcode';
 import jsQR from 'jsqr';
 import { VeilClient, IdentityChangedError, MAX_ATTACHMENT } from '../client/core.js';

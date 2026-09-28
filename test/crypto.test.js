@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Johannes Thorén. All rights reserved.
+// Licensed under the LGJT License v1. See LICENSE in the project root.
+
 import assert from 'node:assert/strict';
 import { Ed, X, enc, dec, utf8, fromUtf8, stmt, safetyNumber } from '../shared/crypto.js';
 import { x3dhInitiate, x3dhRespond } from '../shared/x3dh.js';

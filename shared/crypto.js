@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Johannes Thorén. All rights reserved.
+// Licensed under the LGJT License v1. See LICENSE in the project root.
 // Crypto primitives. Everything here runs in both the browser and Node.
 // Audited libraries only (@noble/*); nothing hand-rolled below the protocol layer.
 import { ed25519, x25519, edwardsToMontgomeryPub, edwardsToMontgomeryPriv } from '@noble/curves/ed25519';

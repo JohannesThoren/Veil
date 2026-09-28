@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Johannes Thorén. All rights reserved.
+// Licensed under the LGJT License v1. See LICENSE in the project root.
 // Double Ratchet (Signal spec) over X25519 / HKDF-SHA256 / HMAC-SHA256 / XChaCha20-Poly1305.
 // State is a plain JSON object (binary as base64url) so it can be stored anywhere.
 // Every operation works on a copy and returns the new state: a failed decrypt never corrupts a session.

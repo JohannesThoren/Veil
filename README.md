@@ -80,3 +80,10 @@ Open **`/admin`** (e.g. `https://veil.example.com/admin`) and sign in with the a
 ## Status
 
 MVP. Not independently audited, so don't rely on it for high-risk use yet. Main gaps: images only (no other file types), no at-rest encryption of local storage, sender is visible to the server (no sealed sender). All are in DESIGN.md §11.
+
+## License
+
+Copyright (c) 2026 Johannes Thorén. All rights reserved.
+
+Licensed under the [LGJT License v1](LICENSE). Personal, non-commercial use
+only. Anything else requires written permission: johannes@lgjt.xyz

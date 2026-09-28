@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Johannes Thorén. All rights reserved.
+// Licensed under the LGJT License v1. See LICENSE in the project root.
 // Veil service worker: offline app shell + push notifications.
 //
 // Push payloads carry no message content — only which account/device sent something

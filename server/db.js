@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Johannes Thorén. All rights reserved.
+// Licensed under the LGJT License v1. See LICENSE in the project root.
 // SQLite storage for the relay. The server only ever holds public keys and opaque ciphertext.
 import { DatabaseSync } from 'node:sqlite';
 
