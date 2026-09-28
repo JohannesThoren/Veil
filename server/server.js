@@ -301,7 +301,7 @@ export function startServer({ port = 8080, dbPath = 'veil.db', staticDir = path.
         push(m.a, m.d, { t: 'env', env: { seq: m.seq, from: { a: conn.account, d: conn.device }, k, b: m.b, ts } });
         // Only real messages wake devices (not key distribution / sync), and never my own devices.
         if (wantPush && m.a !== conn.account) {
-          maybePush(m.a, m.d, { v: 1, a: conn.account, d: conn.device, k, ...(typeof groupKey === 'string' && groupKey.length < 40 ? { g: groupKey } : {}) });
+          maybePush(m.a, m.d, { v: 1, a: conn.account, d: conn.device, k, ...(wantPush === 'call' ? { n: 'call' } : {}), ...(typeof groupKey === 'string' && groupKey.length < 40 ? { g: groupKey } : {}) });
         }
       }
       return { ts };
@@ -311,6 +311,25 @@ export function startServer({ port = 8080, dbPath = 'veil.db', staticDir = path.
       must(Array.isArray(seqs), 'bad seqs');
       for (const s of seqs) q.ack.run(s, conn.account, conn.device);
       return {};
+    },
+
+    // --- calls: ICE servers with short-lived TURN credentials (coturn "use-auth-secret" / TURN REST API) ---
+    iceServers(conn) {
+      must(conn.account, 'not authenticated');
+      const ttlMs = 12 * 3600 * 1000;
+      const expires = Date.now() + ttlMs;
+      const turnUrls = (process.env.TURN_URLS ?? '').split(',').map((u) => u.trim()).filter(Boolean);
+      const secret = process.env.TURN_SECRET ?? '';
+      let stunUrls = (process.env.STUN_URLS ?? '').split(',').map((u) => u.trim()).filter(Boolean);
+      if (!stunUrls.length && turnUrls.length) stunUrls = [...new Set(turnUrls.map((u) => u.replace(/^turns?:/, 'stun:').replace(/\?.*$/, '')))];
+      if (!stunUrls.length) stunUrls = ['stun:stun.cloudflare.com:3478'];
+      const servers = [{ urls: stunUrls }];
+      if (turnUrls.length && secret) {
+        const username = `${Math.floor(expires / 1000)}:${conn.account.slice(0, 8)}`;
+        const credential = crypto.createHmac('sha1', secret).update(username).digest('base64');
+        servers.push({ urls: turnUrls, username, credential });
+      }
+      return { iceServers: servers, expires };
     },
 
     // --- presence & push ---
@@ -413,7 +432,7 @@ export function startServer({ port = 8080, dbPath = 'veil.db', staticDir = path.
       'Content-Security-Policy': "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
       'X-Content-Type-Options': 'nosniff',
       'Referrer-Policy': 'no-referrer',
-      'Permissions-Policy': 'camera=(self), microphone=(), geolocation=()',
+      'Permissions-Policy': 'camera=(self), microphone=(self), geolocation=(), display-capture=()',
     };
     if (req.headers['if-none-match'] === etag) { res.writeHead(304, headers).end(); return; }
     res.writeHead(200, headers);

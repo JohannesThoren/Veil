@@ -15,8 +15,53 @@ services:
       # ADMIN_TOKEN: "choose-a-long-random-string"
       # Set when running behind a reverse proxy, so login rate limits use the real client IP.
       TRUST_PROXY: "1"
+      # Calls: the relay hands out short-lived TURN credentials signed with this shared secret.
+      TURN_URLS: "turn:${TURN_DOMAIN}:3478?transport=udp,turn:${TURN_DOMAIN}:3478?transport=tcp"
+      TURN_SECRET: "${TURN_SECRET}"
     volumes:
       - veil-data:/data   # database, encrypted image blobs, and the push (VAPID) key
+
+  # TURN/STUN for calls between different networks (mobile data ↔ home Wi-Fi, strict NATs).
+  # It only relays already-encrypted media (DTLS-SRTP); it never sees call content.
+  # Open on your router/firewall → this host: 3478/udp, 3478/tcp and 49160-49200/udp.
+  turn:
+    image: coturn/coturn:4.6
+    container_name: veil-turn
+    restart: unless-stopped
+    network_mode: host      # coturn needs a wide UDP port range; host networking avoids thousands of NAT rules
+    command:
+      - -n
+      - --log-file=stdout
+      - --listening-port=3478
+      - --min-port=49160
+      - --max-port=49200
+      - --fingerprint
+      - --use-auth-secret
+      - --static-auth-secret=${TURN_SECRET}
+      - --realm=${TURN_DOMAIN}
+      # public IP (and, behind a router, the host's LAN IP): PUBLIC or PUBLIC/PRIVATE
+      - --external-ip=${TURN_EXTERNAL_IP}
+      - --no-cli
+      - --no-tls
+      - --no-dtls
+      - --no-multicast-peers
+      - --stale-nonce=600
+      - --user-quota=12
+      - --total-quota=240
+      # Never relay into private networks: a TURN server must not become a door into your LAN.
+      - --denied-peer-ip=0.0.0.0-0.255.255.255
+      - --denied-peer-ip=10.0.0.0-10.255.255.255
+      - --denied-peer-ip=100.64.0.0-100.127.255.255
+      - --denied-peer-ip=127.0.0.0-127.255.255.255
+      - --denied-peer-ip=169.254.0.0-169.254.255.255
+      - --denied-peer-ip=172.16.0.0-172.31.255.255
+      - --denied-peer-ip=192.0.0.0-192.0.0.255
+      - --denied-peer-ip=192.168.0.0-192.168.255.255
+      - --denied-peer-ip=198.18.0.0-198.19.255.255
+      - --denied-peer-ip=224.0.0.0-255.255.255.255
+      - --denied-peer-ip=::1
+      - --denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      - --denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
 
 volumes:
   veil-data:

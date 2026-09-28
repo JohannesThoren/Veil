@@ -4,12 +4,14 @@
 import QRCode from 'qrcode';
 import jsQR from 'jsqr';
 import { VeilClient, IdentityChangedError, MAX_ATTACHMENT } from '../client/core.js';
+import { CallManager } from './calls.js';
 import { IdbStore } from '../client/store.js';
 import { formatId } from '../shared/crypto.js';
 
 const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
 const store = new IdbStore('veil');
 let client = null;
+let calls = null;
 const ui = { chatId: null, search: '', drafts: {}, renderQueued: false, urls: new Map() };
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -45,6 +47,13 @@ const I = {
   moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>',
   monitor: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>',
   image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>',
+  phone: '<path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8 9.8a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2z"/>',
+  video: '<path d="m22 8-6 4 6 4V8Z"/><rect x="2" y="6" width="14" height="12" rx="2"/>',
+  videoOff: '<path d="M10.7 6H14a2 2 0 0 1 2 2v3.3l1 1L22 8v8M16 16a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h2M2 2l20 20"/>',
+  mic: '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3"/>',
+  micOff: '<path d="M2 2l20 20M18.9 13.4A7 7 0 0 0 19 12v-2M5 10v2a7 7 0 0 0 12 5M15 9.3V5a3 3 0 0 0-5.7-1.3M9 9v3a3 3 0 0 0 5.1 2.1M12 19v3"/>',
+  flip: '<path d="M3 12a9 9 0 0 1 15-6.7L21 8M21 3v5h-5M21 12a9 9 0 0 1-15 6.7L3 16M3 21v-5h5"/>',
+  chevDown: '<path d="m6 9 6 6 6-6"/>',
   bellOff: '<path d="M8.7 3A6 6 0 0 1 18 8a21 21 0 0 0 .6 5M17 17H3s3-2 3-9a4.7 4.7 0 0 1 .3-1.7M10.3 21a1.9 1.9 0 0 0 3.4 0M2 2l20 20"/>',
   install: '<rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 7v7M9 11l3 3 3-3M10 18h4"/>',
   download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>',
@@ -541,6 +550,8 @@ function startMain({ fresh = false, linked = false } = {}) {
   client.on('status', (s) => { const d = $('.status-dot'); if (d) { d.className = `status-dot ${s}`; d.title = s; } });
   client.on('message', notify);
   client.on('error', (e) => toast(errText(e)));
+  calls = new CallManager(client);
+  calls.onChange(() => { renderCall(); scheduleRender(); });
   client.on('removed', () => {
     alert('This device was unlinked from your account. Its data has been erased.');
     location.reload();
@@ -721,6 +732,7 @@ async function renderConversation(fresh) {
   const idInfo = chat.kind === 'dm' ? await client.getIdentity(chat.peer) : null;
 
   // header
+  const canCall = !chat.request && (group ? group.members.includes(client.me.account) && group.members.length > 1 : (await client.contact(chat.peer))?.status === 'accepted');
   const sub = group
     ? `${group.members.length} member${group.members.length === 1 ? '' : 's'}`
     : idInfo?.verified ? `<span class="pill ok">${icon('shieldCheck', 'i" style="width:12px;height:12px')} Verified</span>` : `<span class="pill">Not verified</span>`;
@@ -728,7 +740,13 @@ async function renderConversation(fresh) {
     <button class="icon-btn back" id="b-back" aria-label="Back">${icon('back')}</button>
     <button class="who" id="b-info">${avatar(chat.gid ?? chat.peer, title, `sm ${group ? 'group' : ''}`)}
       <div style="min-width:0"><div class="name">${esc(title)}</div><div class="sub">${sub}</div></div></button>
+    ${canCall ? `<button class="icon-btn" id="b-call" title="Voice call" aria-label="Voice call">${icon('phone')}</button>
+      <button class="icon-btn" id="b-vcall" title="Video call" aria-label="Video call">${icon('video')}</button>` : ''}
     <button class="icon-btn" id="b-info2" aria-label="Details">${icon('info')}</button>`;
+  if (canCall) {
+    $('#b-call').onclick = () => calls.start(chatId, false).catch((e) => toast(errText(e)));
+    $('#b-vcall').onclick = () => calls.start(chatId, true).catch((e) => toast(errText(e)));
+  }
   $('#b-back').onclick = () => closeChat();
   $('#b-info').onclick = $('#b-info2').onclick = () => (group ? groupInfoModal(chat.gid) : contactInfoModal(chat.peer));
 
@@ -744,7 +762,12 @@ async function renderConversation(fresh) {
       else await client.updateContact(chat.peer, { status: 'blocked' });
       closeChat();
     };
-  } else banner.innerHTML = '';
+  } else {
+    const live = group && !calls.call && [...calls.ongoing.values()].find((o) => o.chatId === chatId && o.joined.size > 0 && !o.joined.has(calls.myKey));
+    banner.innerHTML = live ? `<div class="banner call-live"><div class="grow">${icon('phone')} <b>Call in progress</b> · ${live.joined.size} in the call</div>
+      <button class="btn primary" id="b-join-call">Join</button></div>` : '';
+    if (live) $('#b-join-call').onclick = () => calls.joinOngoing(chatId, false).catch((e) => toast(errText(e)));
+  }
 
   // messages
   const box = $('#messages');
@@ -818,7 +841,20 @@ async function renderConversation(fresh) {
   if (!document.hidden) client.markRead(chatId);
 }
 
+const fmtDur = (sec) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
 async function sysText(s, nameOf) {
+  if (s.kind === 'call') {
+    const ic = s.video ? '📹' : '📞';
+    const what = s.video ? 'video call' : 'call';
+    switch (s.status) {
+      case 'missed': return `${ic} Missed ${what}${s.from ? ` from ${await nameOf(s.from)}` : ''}`;
+      case 'declined': return `${ic} Declined ${what}`;
+      case 'no-answer': return `${ic} No answer`;
+      case 'busy': return `${ic} Busy`;
+      case 'failed': return `${ic} Call couldn’t connect`;
+      default: return `${ic} ${s.dir === 'out' ? 'Outgoing' : 'Incoming'} ${what}${s.duration ? ` · ${fmtDur(s.duration)}` : ''}`;
+    }
+  }
   const who = await nameOf(s.who);
   const list = async (xs) => (await Promise.all(xs.map(nameOf))).join(', ');
   switch (s.kind) {
@@ -830,6 +866,176 @@ async function sysText(s, nameOf) {
     case 'left': return `${who} left`;
     default: return '';
   }
+}
+
+// ------------------------------------------------------------------ calls UI
+const callUi = { id: null, minimized: false, timer: null, tiles: new Map() };
+const END_TEXT = { declined: 'Call declined', busy: 'They’re busy', 'no-answer': 'No answer', failed: 'Call couldn’t connect' };
+
+// Redraws are serialized: call events arrive in bursts and two overlapping async redraws would
+// each build their own call screen.
+let callRendering = null, callDirty = false;
+function renderCall() {
+  if (callRendering) { callDirty = true; return callRendering; }
+  callRendering = (async () => {
+    do { callDirty = false; await renderCallNow(); } while (callDirty);
+  })().catch((e) => console.error(e)).finally(() => { callRendering = null; });
+  return callRendering;
+}
+
+async function renderCallNow() {
+  // ----- incoming
+  const inc = calls.incoming;
+  let incEl = $('#call-incoming');
+  if (inc && !calls.call) {
+    if (!incEl || incEl.dataset.id !== inc.id) {
+      incEl?.remove();
+      const chat = await client.chat(inc.chatId);
+      const title = chat ? await chatTitle(chat) : await client.displayName(inc.from.a);
+      const caller = await client.displayName(inc.from.a);
+      incEl = document.createElement('div');
+      incEl.id = 'call-incoming';
+      incEl.className = 'call-incoming';
+      incEl.dataset.id = inc.id;
+      incEl.innerHTML = `<div class="call-card">
+        ${avatar(inc.gid ?? inc.from.a, title, `xl ${inc.kind === 'group' ? 'group' : ''}`)}
+        <div class="call-title">${esc(title)}</div>
+        <div class="call-sub">${inc.kind === 'group' ? `${esc(caller)} is calling · ` : ''}Incoming ${inc.video ? 'video call' : 'call'}</div>
+        <div class="call-actions">
+          <div><button class="round red" data-decline aria-label="Decline">${icon('phone', 'i hang')}</button><span>Decline</span></div>
+          ${inc.video ? `<div><button class="round grey" data-audio aria-label="Answer without video">${icon('phone')}</button><span>Audio</span></div>` : ''}
+          <div><button class="round green pulse" data-accept aria-label="Answer">${icon(inc.video ? 'video' : 'phone')}</button><span>Answer</span></div>
+        </div></div>`;
+      document.body.append(incEl);
+      incEl.querySelector('[data-decline]').onclick = () => calls.decline();
+      incEl.querySelector('[data-accept]').onclick = () => calls.accept(inc.video).catch((e) => toast(errText(e)));
+      incEl.querySelector('[data-audio]')?.addEventListener('click', () => calls.accept(false).catch((e) => toast(errText(e))));
+      if (document.hidden && notifState() === 'on') {
+        navigator.serviceWorker?.getRegistration().then((reg) => reg?.showNotification(title, {
+          body: `Incoming ${inc.video ? 'video call' : 'call'}`, tag: `call-${inc.id}`, requireInteraction: true, renotify: true,
+          icon: '/icons/icon-192.png', badge: '/icons/badge-96.png', data: { chatId: inc.chatId },
+        })).catch(() => {});
+      }
+    }
+  } else if (incEl) {
+    const id = incEl.dataset.id;
+    incEl.remove();
+    navigator.serviceWorker?.getRegistration().then(async (reg) => { for (const n of (await reg?.getNotifications({ tag: `call-${id}` })) ?? []) n.close(); }).catch(() => {});
+  }
+
+  // ----- active call
+  const c = calls.call;
+  let el = $('#call-screen');
+  if (!c) {
+    if (el) {
+      el.remove();
+      $('#call-bar')?.remove();
+      document.body.classList.remove('has-call-bar');
+      clearInterval(callUi.timer);
+      Object.assign(callUi, { id: null, minimized: false, timer: null, tiles: new Map() });
+      const r = calls.lastEnd?.reason;
+      if (r && END_TEXT[r] && Date.now() - calls.lastEnd.at < 2000) toast(END_TEXT[r]);
+    }
+    return;
+  }
+  const chat = await client.chat(c.chatId);
+  const title = chat ? await chatTitle(chat) : 'Call';
+  if (!el || el.dataset.id !== c.id) {
+    el?.remove();
+    el = document.createElement('div');
+    el.id = 'call-screen';
+    el.className = 'call-screen';
+    el.dataset.id = c.id;
+    el.innerHTML = `
+      <header class="call-top">
+        <button class="icon-btn" data-min aria-label="Minimize">${icon('chevDown')}</button>
+        <div class="grow"><div class="call-title sm">${esc(title)}</div><div class="call-status" data-status></div></div>
+        <span class="pill call-e2e">${icon('lock', 'i" style="width:12px;height:12px')} End-to-end encrypted</span>
+      </header>
+      <div class="call-grid" data-grid></div>
+      <video class="call-self" data-self autoplay playsinline muted></video>
+      <div class="call-controls">
+        <button class="round grey" data-mic aria-label="Mute"></button>
+        <button class="round grey" data-cam aria-label="Camera"></button>
+        <button class="round grey" data-flip aria-label="Switch camera">${icon('flip')}</button>
+        <button class="round red" data-hang aria-label="Hang up">${icon('phone', 'i hang')}</button>
+      </div>`;
+    document.body.append(el);
+    Object.assign(callUi, { id: c.id, minimized: false, tiles: new Map() });
+    el.querySelector('[data-min]').onclick = () => { callUi.minimized = true; renderCall(); };
+    el.querySelector('[data-hang]').onclick = () => calls.hangup();
+    el.querySelector('[data-mic]').onclick = () => calls.toggleMute();
+    el.querySelector('[data-cam]').onclick = () => calls.toggleCamera().catch((e) => toast(errText(e)));
+    el.querySelector('[data-flip]').onclick = () => calls.switchCamera().catch((e) => toast(errText(e)));
+    clearInterval(callUi.timer);
+    callUi.timer = setInterval(updateCallStatus, 1000);
+  }
+  el.classList.toggle('hidden', callUi.minimized);
+  let bar = $('#call-bar');
+  document.body.classList.toggle('has-call-bar', callUi.minimized);
+  if (callUi.minimized) {
+    if (!bar) {
+      bar = document.createElement('button');
+      bar.id = 'call-bar';
+      bar.className = 'call-bar';
+      document.body.append(bar);
+      bar.onclick = () => { callUi.minimized = false; renderCall(); };
+    }
+  } else bar?.remove();
+
+  // tiles
+  const grid = el.querySelector('[data-grid]');
+  const peers = [...c.peers.entries()];
+  for (const [k, tile] of callUi.tiles) if (!c.peers.has(k)) { tile.remove(); callUi.tiles.delete(k); }
+  grid.querySelector('.tile.waiting')?.remove();
+  if (!peers.length) {
+    const w = document.createElement('div');
+    w.className = 'tile waiting no-video';
+    w.innerHTML = `<div class="tile-avatar">${avatar(chat?.gid ?? chat?.peer ?? c.id, title, `xl ${c.kind === 'group' ? 'group' : ''}`)}</div>`;
+    grid.append(w);
+  }
+  for (const [k, p] of peers) {
+    let tile = callUi.tiles.get(k);
+    const name = await client.displayName(p.a);
+    if (!tile) {
+      tile = document.createElement('div');
+      tile.className = 'tile';
+      tile.innerHTML = `<video autoplay playsinline></video><div class="tile-avatar">${avatar(p.a, name, 'xl')}</div><div class="tile-name"></div>`;
+      grid.append(tile);
+      callUi.tiles.set(k, tile);
+    }
+    const v = tile.querySelector('video');
+    if (v.srcObject !== p.stream) { v.srcObject = p.stream; v.play().catch(() => {}); }
+    const live = p.stream.getVideoTracks().some((t) => t.readyState === 'live' && !t.muted);
+    tile.classList.toggle('no-video', !(live && p.cam));
+    tile.querySelector('.tile-name').innerHTML = `${p.mic ? '' : icon('micOff', 'i" style="width:14px;height:14px')} ${esc(name)}${p.state !== 'connected' ? ` <span class="muted">· ${p.state === 'failed' || p.state === 'disconnected' ? 'reconnecting…' : 'connecting…'}</span>` : ''}`;
+  }
+  grid.dataset.n = String(Math.max(1, peers.length));
+
+  // self view & controls
+  const self = el.querySelector('[data-self]');
+  const hasCam = c.local.getVideoTracks().length > 0;
+  if (self.srcObject !== c.local) { self.srcObject = c.local; self.play().catch(() => {}); }
+  self.classList.toggle('hidden', !hasCam || c.camOff);
+  self.classList.toggle('mirror', c.facing === 'user');
+  el.querySelector('[data-mic]').innerHTML = icon(c.muted ? 'micOff' : 'mic');
+  el.querySelector('[data-mic]').classList.toggle('on', c.muted);
+  el.querySelector('[data-cam]').innerHTML = icon(hasCam && !c.camOff ? 'video' : 'videoOff');
+  el.querySelector('[data-cam]').classList.toggle('on', !hasCam || c.camOff);
+  el.querySelector('[data-flip]').classList.toggle('hidden', !hasCam || c.camOff || !matchMedia('(pointer: coarse)').matches);
+  updateCallStatus();
+}
+
+function updateCallStatus() {
+  const c = calls?.call;
+  if (!c) return;
+  const txt = c.status === 'ringing' ? 'Calling…'
+    : c.status === 'connecting' ? 'Connecting…'
+    : fmtDur(Math.floor((Date.now() - (c.started ?? Date.now())) / 1000));
+  const st = $('#call-screen [data-status]');
+  if (st) st.textContent = txt + (c.kind === 'group' && c.peers.size ? ` · ${c.peers.size + 1} people` : '');
+  const bar = $('#call-bar');
+  if (bar) bar.innerHTML = `<span class="dot"></span> ${esc($('#call-screen .call-title')?.textContent ?? 'Call')} · ${esc(txt)} <b>Return</b>`;
 }
 
 async function notify(m) {
