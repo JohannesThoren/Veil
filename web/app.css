@@ -98,8 +98,8 @@ svg.i { width: 20px; height: 20px; flex: none; }
 .points svg { color: var(--accent); margin-top: 1px; }
 
 /* ---------- shell ---------- */
-.shell { display: grid; grid-template-columns: 340px 1fr; height: 100%; }
-.side { background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+.shell { display: grid; grid-template-columns: 340px minmax(0, 1fr); height: 100%; }
+.side { background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .side-head { display: flex; align-items: center; gap: 6px; padding: 14px 12px 10px 16px; }
 .side-head .title { font-weight: 700; font-size: 19px; letter-spacing: -.01em; flex: 1; display: flex; align-items: center; gap: 8px; }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
@@ -223,7 +223,7 @@ label.list-item { cursor: pointer; }
 
 /* ---------- mobile ---------- */
 @media (max-width: 760px) {
-  .shell { grid-template-columns: 1fr; }
+  .shell { grid-template-columns: minmax(0, 1fr); }
   .shell.in-chat .side { display: none; }
   .shell:not(.in-chat) .main { display: none; }
   .back { display: inline-grid; }
