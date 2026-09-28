@@ -35,6 +35,12 @@
 
 * { box-sizing: border-box; }
 html, body, #app { height: 100%; margin: 0; }
+/* App-like viewport: no zooming, no rubber-band scrolling, always exactly the visible screen */
+html { touch-action: manipulation; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body { overscroll-behavior: none; }
+@supports (height: 100dvh) { #app { height: 100dvh; } }
+/* iOS zooms into focused fields with text under 16px; never trigger that */
+@media (pointer: coarse) { input, textarea, select { font-size: 16px !important; } }
 body {
   background: var(--bg); color: var(--text);
   font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, Inter, sans-serif;
