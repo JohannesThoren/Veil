@@ -536,6 +536,7 @@ export function startServer({ port = 8080, dbPath = 'veil.db', staticDir = path.
       }
       const invites = q.listInvites.all().map(inviteView);
       return json(res, 200, {
+        publicUrl: (process.env.PUBLIC_URL || '').replace(/\/+$/, '') || null,
         stats: { ...q.stats.get(), blobs, blobBytes, online: online.size, activeInvites: invites.filter((i) => i.status === 'active').length },
         invites,
         accounts: q.listAccounts.all().map((a) => ({ id: a.id, created: a.created, devices: a.devices, lastSeen: a.last_seen, invite: a.invite_code ? { code: a.invite_code, label: a.invite_label ?? '' } : null })),

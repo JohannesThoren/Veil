@@ -7,7 +7,9 @@ const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const formatId = (id) => id.match(/.{1,4}/g).join('-');
-const inviteLink = (code) => `${location.origin}/#invite=${code}`;
+let publicOrigin = location.origin; // replaced by PUBLIC_URL from the server when set
+const inviteLink = (code) => `${publicOrigin}/#invite=${code}`;
+const internalOrigin = (o) => { try { const u = new URL(o); return u.protocol !== 'https:' || /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(u.hostname) || !u.hostname.includes('.'); } catch { return true; } };
 
 const I = {
   logo: '',
@@ -61,7 +63,7 @@ function toast(text) {
 async function copy(text, msg = 'Copied') {
   try { await navigator.clipboard.writeText(text); toast(msg); } catch { prompt('Copy this:', text); }
 }
-const qrSvg = (text) => QRCode.toString(text, { type: 'svg', margin: 0, errorCorrectionLevel: 'M', color: { dark: '#0b1116', light: '#ffffff' } });
+const qrSvg = (text) => QRCode.toString(text, { type: 'svg', margin: 4, errorCorrectionLevel: 'M', color: { dark: '#0b1116', light: '#ffffff' } });
 function ago(ts) {
   if (!ts) return '—';
   const s = (Date.now() - ts) / 1000;
@@ -145,6 +147,7 @@ let refreshTimer;
 async function start() {
   try {
     state.data = await api('GET', 'overview');
+    if (state.data.publicUrl) publicOrigin = state.data.publicUrl;
   } catch (e) {
     if (e.status === 401) return renderLogin();
     return toast(e.message);
@@ -168,6 +171,7 @@ function renderShell() {
       <button class="icon-btn" id="logout" title="Sign out" aria-label="Sign out">${icon('logout')}</button>
     </header>
     <main class="admin-main">
+      <div id="origin-warn"></div>
       <section class="stats" id="stats"></section>
 
       <section class="card">
@@ -240,6 +244,9 @@ async function renderInviteResult() {
 
 function renderData() {
   const { stats, invites, accounts } = state.data;
+  $('#origin-warn').innerHTML = internalOrigin(publicOrigin)
+    ? `<div class="notice warn">${icon('ban')}<div><b>Invite links point to ${esc(publicOrigin)}</b><br>Phones outside your network (or without HTTPS) can't open that. Open this admin page via your public <span class="mono">https://</span> address, or set <span class="mono">PUBLIC_URL=https://your.domain</span> on the server.</div></div>`
+    : '';
   const tile = (n, l) => `<div class="stat"><div class="n">${n}</div><div class="l">${l}</div></div>`;
   $('#stats').innerHTML = [
     tile(stats.accounts, 'Identities'),

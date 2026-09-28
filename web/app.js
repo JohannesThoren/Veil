@@ -95,7 +95,7 @@ function errText(e) {
 async function copy(text, what = 'Copied') {
   try { await navigator.clipboard.writeText(text); toast(what); } catch { toast('Copy failed — select and copy manually'); }
 }
-const qrSvg = (text) => QRCode.toString(text, { type: 'svg', margin: 0, errorCorrectionLevel: 'M', color: { dark: '#0b1116', light: '#ffffff' } });
+const qrSvg = (text) => QRCode.toString(text, { type: 'svg', margin: 4, errorCorrectionLevel: 'M', color: { dark: '#0b1116', light: '#ffffff' } });
 
 // ------------------------------------------------------------------ theme
 const darkMq = matchMedia('(prefers-color-scheme: dark)');
@@ -455,7 +455,11 @@ function paintCreateCard({ code = '', checking = false, valid = false, error = '
   const card = $('#w-create-card');
   if (!card) return;
   if (valid) {
+    const iosSafari = isIOS() && !isStandalone();
     card.innerHTML = `
+      ${iosSafari ? `<div class="notice">${icon('info')}<div><b>On iPhone, install Veil first.</b> Safari and the Home Screen app keep separate data, so an identity created here won’t be in the app.
+        <ol style="margin:8px 0 0;padding-left:18px"><li>Tap <b>Copy invite</b>.</li><li>Share ${icon('share', 'i" style="width:14px;height:14px;vertical-align:-2px')} → <b>Add to Home Screen</b>.</li><li>Open Veil from the Home Screen and paste the invite.</li></ol>
+        <button class="btn sm" id="w-copy-inv" style="margin-top:10px">${icon('copy')} Copy invite</button></div></div>` : ''}
       <h2>You’re invited</h2>
       <p>Create your identity. You get a random ID, with no phone number or email, and share it or its QR code with people you want to talk to.</p>
       <label class="field"><span>Your name (optional)</span>
@@ -478,7 +482,8 @@ function paintCreateCard({ code = '', checking = false, valid = false, error = '
         btn.textContent = 'Create identity';
       }
     };
-    setTimeout(() => $('#w-name')?.focus(), 50);
+    $('#w-copy-inv')?.addEventListener('click', () => copy(`${location.origin}/#invite=${code}`, 'Invite copied — now add Veil to your Home Screen'));
+    if (!iosSafari) setTimeout(() => $('#w-name')?.focus(), 50);
     return;
   }
   card.innerHTML = `
